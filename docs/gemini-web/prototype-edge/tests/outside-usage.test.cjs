@@ -44,3 +44,26 @@ test('resposta histórica atrasada não restaura resultado depois de apagar',asy
   const ctx=vm.createContext({document:{getElementById:id=>els[id]},chrome:{runtime:{sendMessage:async msg=>msg.type==='AUTO_STATE'?new Promise(resolve=>{resolveState=resolve;}):{} }}});
   vm.runInContext(source('auto-popup.js'),ctx);await els['auto-erase'].click();resolveState({enabled:true,freshness:'historical',snapshot:snapshot()});await new Promise(r=>setImmediate(r));assert.equal(els['auto-result'].textContent,'');assert.match(els['auto-status'].textContent,/Dados apagados/u);
 });
+
+async function openUsageClick(url){
+  let injected=0;const created=[];
+  const els=Object.fromEntries(['read','clear','open-usage','result','status'].map(id=>[id,{textContent:'',addEventListener(_,fn){this.click=fn;}}]));
+  const ctx=vm.createContext({URL,Date,Intl,document:{getElementById:id=>els[id]},chrome:{tabs:{query:async()=>url===undefined?[]:[{id:1,url}],create:async opts=>{created.push(opts.url);}},scripting:{executeScript:async()=>{injected++;}}}});
+  vm.runInContext(source('popup.js'),ctx);await els['open-usage'].click();return {created,injected};
+}
+test('atalho #open-usage em conversa /u/2/app abre https://gemini.google.com/u/2/usage sem injeção',async()=>{
+  const r=await openUsageClick('https://gemini.google.com/u/2/app');
+  assert.deepEqual(r.created,['https://gemini.google.com/u/2/usage']);assert.equal(r.injected,0);
+});
+test('atalho #open-usage fora de /u/<digitos>/ ou em URL inválida usa fallback fixo sem open redirect',async()=>{
+  for(const url of ['https://gemini.google.com/app','https://gemini.google.com/u/abc/app','https://user:pass@gemini.google.com/u/2/app','https://gemini.google.com.evil.invalid/u/2/app','http://gemini.google.com/u/2/app','javascript:alert(1)',undefined]){
+    const r=await openUsageClick(url);
+    assert.deepEqual(r.created,['https://gemini.google.com/usage']);assert.equal(r.injected,0);
+  }
+});
+test('popup.html inclui atalho #open-usage e mantém #auto-diagnostics hidden por padrão',()=>{
+  const html=source('popup.html');
+  assert.match(html,/<button id="open-usage" type="button">Abrir Limites de uso \(\/usage\)<\/button>/u);
+  assert.match(html,/<button id="auto-diagnostics"\s+hidden>Diagnóstico local \(experimental\)<\/button>/u);
+});
+

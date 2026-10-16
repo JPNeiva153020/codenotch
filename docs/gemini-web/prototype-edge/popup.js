@@ -8,7 +8,23 @@ function allowedUrl(raw) {
     return url.origin === 'https://gemini.google.com' && !url.username && !url.password && /^\/u\/\d+\/usage\/?$/u.test(url.pathname);
   } catch { return false; }
 }
+function usageTargetUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.origin !== 'https://gemini.google.com' || url.username || url.password) return 'https://gemini.google.com/usage';
+    const match = /^\/u\/(\d+)(?:\/|$)/u.exec(url.pathname);
+    return match ? `https://gemini.google.com/u/${match[1]}/usage` : 'https://gemini.google.com/usage';
+  } catch { return 'https://gemini.google.com/usage'; }
+}
 document.getElementById('clear').addEventListener('click', () => { output.textContent = ''; status.textContent = 'Leitura limpa.'; });
+document.getElementById('open-usage')?.addEventListener('click', async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.tabs.create({ url: usageTargetUrl(tab?.url) });
+  } catch {
+    status.textContent = 'Não foi possível abrir a página de limites.';
+  }
+});
 async function historicalOnly() {
   status.textContent='Abra Limites de uso para consultar os indicadores';
   try {

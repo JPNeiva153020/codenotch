@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="pt-BR"><meta charset="utf-8"><title>Gemini Web — protótipo</title>
 <body><h1>Gemini Web</h1><p>Leitura manual disponível. Modo automático desativado até seu consentimento.</p>
-<button id="read">Ler indicadores visíveis</button><button id="clear">Limpar</button>
+<button id="read">Ler indicadores visíveis</button><button id="clear">Limpar</button><button id="open-usage" type="button">Abrir Limites de uso (/usage)</button>
 <p id="status" role="status">Sem leitura. Protótipo sem conexão ao Codenotch.</p><pre id="result"></pre>
 <hr><h2>Modo automático opcional</h2>
 <p>Para ativar, o Edge solicitará acesso ao domínio Gemini, eventos de navegação e armazenamento local. A permissão técnica abrange o domínio; o código lê apenas /u/&lt;perfil&gt;/usage. Não registra perfil, URL ou conversas.</p>
 <button id="auto-enable">Consentir e ativar automático</button><button id="auto-disable">Desativar automático</button>
 <button id="auto-state">Consultar última observação</button><button id="auto-erase">Apagar tudo e revogar acesso</button>
 <button id="auto-recheck">Reverificar a página visível</button>
-<button id="auto-diagnostics">Diagnóstico local (experimental)</button><pre id="auto-diagnostic-result"></pre>
+<button id="auto-diagnostics" hidden>Diagnóstico local (experimental)</button><pre id="auto-diagnostic-result"></pre>
 <p id="auto-status" role="status">Automático desativado.</p><pre id="auto-result"></pre>
 <p>Uma observação recente pode ter mudado. O snapshot é invalidado após 24h e removido na próxima consulta; sem página de limites aberta não há leitura nova. Limpar acima limpa só a leitura manual; Apagar tudo remove os dados automáticos.</p>
 <script src="popup.js"></script><script src="auto-core.js"></script><script src="auto-popup.js"></script></body></html>
