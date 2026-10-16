@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codenotch Gemini Experimental",
+  "version": "0.1.0",
+  "identifier": "com.codenotch.gemini.experimental",
+  "build": { "frontendDist": "ui" },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": { "csp": "default-src 'self'; script-src 'none'; connect-src 'none'; object-src 'none'", "capabilities": [] }
+  },
+  "bundle": { "active": false, "icon": ["icons/icon.ico", "icons/icon.png"] },
+  "plugins": {}
+}

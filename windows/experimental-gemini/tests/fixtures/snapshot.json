@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "provider_id": "gemini_web",
+  "origin": "visible_ui",
+  "collection": "dom_on_authorized_usage",
+  "observed_at_ms": 1800000000000,
+  "model": null,
+  "scope": "Gemini Web",
+  "account_scope": "unknown",
+  "status": "observed",
+  "windows": [
+    { "id": "current", "status": "observed", "used_percent": 25, "remaining_percent": 75,
+      "reset": { "day": null, "month": null, "year": null, "hour": 15, "minute": 20, "timezone": null, "epoch_ms": null, "needs_confirmation": true }, "issues": [] },
+    { "id": "weekly", "status": "observed", "used_percent": 4, "remaining_percent": 96,
+      "reset": { "day": 17, "month": 2, "year": null, "hour": 11, "minute": 15, "timezone": null, "epoch_ms": null, "needs_confirmation": true }, "issues": [] }
+  ],
+  "issues": []
+}

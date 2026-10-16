@@ -1,0 +1,35 @@
+[package]
+name = "codenotch-gemini-experimental"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+default-run = "codenotch-gemini-experimental"
+
+# Independent opt-in workspace: official Windows targets and lockfile are untouched.
+[workspace]
+
+[features]
+default = []
+experimental-ui = ["dep:tauri", "dep:tauri-build", "tauri/custom-protocol"]
+
+[[bin]]
+name = "codenotch-gemini-experimental"
+path = "src/main.rs"
+required-features = ["experimental-ui"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+dirs = "5"
+tauri = { version = "2.11", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"

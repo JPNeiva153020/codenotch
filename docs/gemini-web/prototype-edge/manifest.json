@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Web — protótipo de leitura local",
+  "version": "0.0.4",
+  "description": "Leitura manual e automática opcional dos indicadores visíveis. Sem integração ao Codenotch.",
+  "permissions": ["activeTab", "scripting"],
+  "optional_permissions": ["storage", "webNavigation"],
+  "optional_host_permissions": ["https://gemini.google.com/*"],
+  "background": { "service_worker": "auto-worker.js" },
+  "action": { "default_popup": "popup.html" },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'" }
+}
