@@ -215,6 +215,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
         const auto = await enabled();
         const freshness = core.freshness(snapshot,Date.now(),auto && core.usageUrl(tab?.url));
         if (freshness === 'unavailable') { await chrome.storage.local.remove('lastSnapshot'); updateBadge(null); }
+        else if (snapshot) { notifyNativeHost(snapshot); }
         return {enabled:auto,snapshot:freshness==='unavailable'?null:snapshot,freshness};
       }
       return {};

@@ -98,7 +98,7 @@ test('desativado conserva acesso apenas ao último histórico até apagar',async
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
 test('configuração mínima: opcionais sem content scripts permanentes',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.deepEqual(m.permissions,['activeTab','scripting']);assert.deepEqual(m.optional_permissions,['storage','webNavigation','nativeMessaging']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
+  const m=JSON.parse(code('manifest.json'));assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
 });
 test('novos scripts sem rede, cookies, tokens, código remoto ou logs',()=>{
   for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js']){
@@ -267,7 +267,7 @@ test('popup ao abrir dispara AUTO_RECHECK automático somente quando enabled=tru
   assert.equal(JSON.parse(staleOpen.elements['auto-result'].textContent).windows[0].used_percent,35);
 });
 
-test('AUTO_SNAPSHOT notifica host nativo com.codenotch.gemini_web e tolera falha de sendNativeMessage',async()=>{
+test('AUTO_SNAPSHOT e AUTO_STATE notificam host nativo com.codenotch.gemini_web e toleram falha de sendNativeMessage',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   const sender={id:'test-extension',url:w.tab.url,tab:{id:1}};
   const snap=sample();snap.observed_at_ms=Date.now()-2000;snap.windows[0].used_percent=48;
@@ -278,6 +278,12 @@ test('AUTO_SNAPSHOT notifica host nativo com.codenotch.gemini_web e tolera falha
   assert.equal(w.nativeMessages[0].payload.provider,'gemini_web');
   assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,48);
   assert.equal('extra' in w.nativeMessages[0].payload,false);
+
+  const stateRes=await w.message({type:'AUTO_STATE'});
+  assert.equal(stateRes.snapshot.windows[0].used_percent,48);
+  assert.equal(w.nativeMessages.length,2);
+  assert.equal(w.nativeMessages[1].host,'com.codenotch.gemini_web');
+  assert.equal(w.nativeMessages[1].payload.windows[0].used_percent,48);
 
   w.chrome.runtime.sendNativeMessage=()=>{throw new Error('Specified native messaging host not found.');};
   const snap2=sample();snap2.observed_at_ms=Date.now()-1000;snap2.windows[0].used_percent=52;

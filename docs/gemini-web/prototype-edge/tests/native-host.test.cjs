@@ -132,3 +132,27 @@ test('host nativo rejeita provider inválido, percentual fora de 0..100, campo d
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('wrapper host.cmd encaminha frame válido para host.cjs no Windows', () => {
+  const hostCmdPath = path.join(__dirname, '..', '..', 'native-host', 'host.cmd');
+  assert.equal(fs.existsSync(hostCmdPath), true);
+  const content = fs.readFileSync(hostCmdPath, 'utf8');
+  assert.match(content, /@echo off/i);
+  assert.match(content, /"%~dp0host\.cjs"/);
+  if (process.platform === 'win32') {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenotch-gemini-cmd-'));
+    const stateFile = path.join(tmpDir, 'gemini-web-state.json');
+    try {
+      const res = spawnSync('cmd.exe', ['/d', '/s', '/c', hostCmdPath], {
+        input: encodeFrame(validSnapshot()),
+        env: { ...process.env, CODENOTCH_GEMINI_WEB_STATE: stateFile },
+      });
+      assert.equal(res.status, 0);
+      assert.deepEqual(decodeFrame(res.stdout), { ok: true });
+      assert.equal(fs.existsSync(stateFile), true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+});
+
