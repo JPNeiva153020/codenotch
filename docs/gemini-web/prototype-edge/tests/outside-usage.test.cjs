@@ -61,9 +61,10 @@ test('atalho #open-usage fora de /u/<digitos>/ ou em URL inválida usa fallback 
     assert.deepEqual(r.created,['https://gemini.google.com/usage']);assert.equal(r.injected,0);
   }
 });
-test('popup.html inclui atalho #open-usage e mantém #auto-diagnostics hidden por padrão',()=>{
+test('popup.html inclui atalho #open-usage, botão #auto-recheck em 2º plano e mantém #auto-diagnostics hidden por padrão',()=>{
   const html=source('popup.html');
   assert.match(html,/<button id="open-usage" type="button">Abrir Limites de uso \(\/usage\)<\/button>/u);
+  assert.match(html,/<button id="auto-recheck">Atualizar em 2º plano \(Reverificar\)<\/button>/u);
   assert.match(html,/<button id="auto-diagnostics"\s+hidden>Diagnóstico local \(experimental\)<\/button>/u);
 });
 

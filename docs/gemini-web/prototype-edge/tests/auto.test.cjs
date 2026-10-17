@@ -62,13 +62,13 @@ test('exceção inesperada encerra controlador sem loop ou log',async()=>{
 });
 function event(){const list=[];return {addListener(fn,filter){list.push({fn,filter});},removeListener(fn){const i=list.findIndex(x=>x.fn===fn);if(i>=0)list.splice(i,1);},hasListener:fn=>list.some(x=>x.fn===fn),list};}
 function worker(data={}) {
-  let granted=false,storageGranted=false;const injections=[],sent=[];const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
+  let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],otherTabs=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
   const tab={id:1,url:'https://gemini.google.com/u/0/usage'};
-  const chrome={permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async()=>({...tab}),query:async()=>[{...tab}],sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages}};
+  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages}};
   const ctx=vm.createContext({URL,Date,chrome,Set,Promise,setTimeout:fn=>setTimeout(fn,20),clearTimeout});ctx.importScripts=filename=>vm.runInContext(code(filename),ctx);vm.runInContext(code('auto-worker.js'),ctx);
   const popup={id:chrome.runtime.id,url:chrome.runtime.getURL('popup.html')};
   const message=(m,sender=popup)=>new Promise(resolve=>{const accepted=events.messages.list[0].fn(m,sender,resolve);if(!accepted)resolve(null);});
-  return {data,tab,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
+  return {data,tab,otherTabs,reloaded,created,badge,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
 }
 test('worker desativado por padrão não injeta nem persiste',async()=>{
   const w=worker();await w.events.complete.list[0].fn({frameId:0,tabId:1,url:w.tab.url});assert.equal(w.injections.length,0);assert.equal(Object.keys(w.data).length,0);
@@ -137,13 +137,17 @@ test('navegações concorrentes descartam tentativa anterior da mesma aba',async
   assert.equal(w.injections.length,1);
 });
 
-test('reverificar por gesto não pede nem muda permissões e respeita a rota',async()=>{
+test('reverificar por gesto não pede nem muda permissões e fora de /usage usa aba em 2º plano sem injetar no chat',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   assert.equal((await w.message({type:'AUTO_RECHECK'})).requested,true);
   assert.equal(w.injections.length,1);assert.equal(w.granted,true);
-  w.tab.url='https://gemini.google.com/app';
-  assert.equal((await w.message({type:'AUTO_RECHECK'})).requested,false);
+  w.tab.url='https://gemini.google.com/u/2/app';
+  const r=await w.message({type:'AUTO_RECHECK'});
+  assert.equal(r.requested,true);
   assert.equal(w.injections.length,1);
+  assert.equal(w.created.length,1);
+  assert.equal(w.created[0].url,'https://gemini.google.com/u/2/usage');
+  assert.equal(w.created[0].active,false);
 });
 
 test('reverificar sem consentimento não injeta nem cria preferência',async()=>{
@@ -183,3 +187,37 @@ test('worker preserva instante da captura em vez de substituir pelo recebimento'
 test('diagnóstico do controlador distingue leitura de rejeição pelo worker',async()=>{
   const c=controller({publish:async()=>({accepted:false,code:'worker_rejected'})});c.api.start();await c.tick();assert.equal(c.reads,1);assert.equal(c.api.stats.last_code,'worker_rejected');assert.equal(c.api.stats.publications,0);
 });
+
+test('badge atualiza texto e cor por faixa (<50 verde, 50..79 âmbar, >=80 vermelho) e limpa ao expirar ou apagar',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  const sender={id:'test-extension',url:w.tab.url,tab:{id:1}};
+  let t=Date.now()-10000;
+  for(const [pct,expectedColor] of [[24,'#16a34a'],[50,'#d97706'],[79,'#d97706'],[80,'#dc2626']]){
+    const snap=sample();snap.observed_at_ms=(t+=1000);snap.windows[0].used_percent=pct;
+    assert.equal((await w.message({type:'AUTO_SNAPSHOT',snapshot:snap},sender)).accepted,true);
+    assert.equal(w.badge.text,`${pct}%`);assert.equal(w.badge.color,expectedColor);
+  }
+  w.data.lastSnapshot.observed_at_ms=Date.now()-86400001;
+  const state=await w.message({type:'AUTO_STATE'});
+  assert.equal(state.freshness,'unavailable');assert.equal(w.badge.text,'');
+  const fresh=sample();fresh.observed_at_ms=Date.now();fresh.windows[0].used_percent=48;
+  await w.message({type:'AUTO_SNAPSHOT',snapshot:fresh},sender);
+  assert.equal(w.badge.text,'48%');assert.equal(w.badge.color,'#16a34a');
+  await w.message({type:'AUTO_ERASE'});
+  assert.equal(w.badge.text,'');
+});
+
+test('AUTO_RECHECK em conversa localiza e recarrega aba /usage existente em 2º plano e confirma publicação',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/u/0/app';
+  const bgTab={id:42,url:'https://gemini.google.com/u/0/usage'};
+  w.otherTabs.push(bgTab);
+  const pending=w.message({type:'AUTO_RECHECK'});
+  await flush();
+  assert.deepEqual(w.reloaded,[42]);assert.equal(w.created.length,0);assert.equal(w.injections.length,0);
+  const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=62;
+  await w.message({type:'AUTO_SNAPSHOT',snapshot:snap},{id:'test-extension',url:bgTab.url,tab:{id:42}});
+  const result=await pending;
+  assert.equal(result.confirmed,true);assert.equal(result.code,'updated');assert.equal(w.badge.text,'62%');assert.equal(w.badge.color,'#d97706');
+});
+

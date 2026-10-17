@@ -68,14 +68,15 @@ test('custo em fixture: 500 mutações, nenhuma leitura adicional em idle e heap
   });
 });
 
-test('retorno visible retoma leitura sem novo consentimento',async()=>{
+test('aba /usage em segundo plano captura mutação e retorno visible reavalia sem novo consentimento',async()=>{
   await withPage(async page=>{
     await page.waitForFunction(()=>fixtureState.published===1);
     await page.evaluate(()=>{fixtureVisible(false);document.querySelector('.current strong').textContent='Quantidade usada: 27%';});
-    await page.waitForTimeout(450);assert.equal(await page.evaluate(()=>fixtureState.reads),1);
-    await page.evaluate(()=>fixtureVisible(true));
     await page.waitForFunction(()=>fixtureState.snapshot.windows[0].used_percent===27,{},{timeout:2000});
     assert.equal(await page.evaluate(()=>fixtureState.published),2);
+    await page.evaluate(()=>{document.querySelector('.current strong').textContent='Quantidade usada: 28%';fixtureVisible(true);});
+    await page.waitForFunction(()=>fixtureState.snapshot.windows[0].used_percent===28,{},{timeout:2000});
+    assert.equal(await page.evaluate(()=>fixtureState.published),3);
   });
 });
 

@@ -3,7 +3,7 @@
   if (!GeminiAutoCore.usageUrl(location.href)) return;
   globalThis.CodenotchGeminiAutoSession?.stop();
   let controller = null, disposed = false, currentRoot = null;
-  const allowed = () => GeminiAutoCore.usageUrl(location.href) && document.visibilityState === 'visible';
+  const allowed = () => GeminiAutoCore.usageUrl(location.href);
   function pause() { controller?.stop(); controller = null; currentRoot=null; }
   function stop() {
     disposed = true; pause();
@@ -47,7 +47,7 @@
   }
   function onVisibility() {
     if (!GeminiAutoCore.usageUrl(location.href)) { stop(); return; }
-    if (document.visibilityState !== 'visible') pause(); else start();
+    if (document.visibilityState === 'visible') start();
   }
   function onShow() { if (!GeminiAutoCore.usageUrl(location.href)) stop(); else if (!controller) start(); }
   const onMessage = (message,_sender,reply) => {

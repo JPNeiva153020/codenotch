@@ -9,6 +9,27 @@ const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0};
 let revision = 0;
 let serial = Promise.resolve();
 const locked = task => { const next = serial.then(task, task); serial = next.catch(() => {}); return next; };
+function updateBadge(snapshot) {
+  try {
+    const current = snapshot?.windows?.find(w => w && w.id === 'current');
+    const used = current?.used_percent;
+    if (!Number.isFinite(used) || used < 0 || used > 100) {
+      void chrome.action?.setBadgeText?.({ text: '' });
+      return;
+    }
+    const color = used >= 80 ? '#dc2626' : used >= 50 ? '#d97706' : '#16a34a';
+    void chrome.action?.setBadgeBackgroundColor?.({ color });
+    void chrome.action?.setBadgeText?.({ text: `${used}%` });
+  } catch {}
+}
+function usageTargetUrl(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.origin !== 'https://gemini.google.com' || u.username || u.password) return 'https://gemini.google.com/usage';
+    const m = /^\/u\/(\d+)(?:\/|$)/u.exec(u.pathname);
+    return m ? `https://gemini.google.com/u/${m[1]}/usage` : 'https://gemini.google.com/usage';
+  } catch { return 'https://gemini.google.com/usage'; }
+}
 function finishRead(tabId,result,expected) {
   const pending=pendingReads.get(tabId);
   if (!pending || (expected && pending!==expected)) return;
@@ -19,20 +40,44 @@ function reportRead(tabId,observed,result) {
   const pending=pendingReads.get(tabId);
   if (pending && pending.revision===revision && observed>=pending.started) finishRead(tabId,result);
 }
+async function waitForTabRead(tabId,generation,trigger) {
+  finishRead(tabId,{confirmed:false,code:'superseded'});
+  let pendingRequest;
+  const completion=new Promise(resolve=>{
+    const pending=pendingRequest={resolve,revision:generation,started:Date.now(),timer:null};
+    pending.timer=setTimeout(()=>finishRead(tabId,{confirmed:false,code:'no_observation'},pending),7000);
+    pendingReads.set(tabId,pending);
+  });
+  try {
+    if (!await trigger()) finishRead(tabId,{confirmed:false,code:'execution_failed'},pendingRequest);
+  } catch {
+    finishRead(tabId,{confirmed:false,code:'execution_failed'},pendingRequest);
+  }
+  return completion;
+}
 async function recheck() {
   const generation=revision;
   if (!await enabled()) return {requested:false,confirmed:false,code:'not_authorized'};
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
-  if (generation!==revision || !core.usageUrl(tab?.url)) return {requested:false,confirmed:false,code:'blocked_route'};
-  finishRead(tab.id,{confirmed:false,code:'superseded'});
-  let pendingRequest;
-  const completion=new Promise(resolve=>{
-    const pending=pendingRequest={resolve,revision:generation,started:Date.now(),timer:null};
-    pending.timer=setTimeout(()=>finishRead(tab.id,{confirmed:false,code:'no_observation'},pending),7000);
-    pendingReads.set(tab.id,pending);
-  });
-  if (!await navigate({frameId:0,tabId:tab.id,url:tab.url})) finishRead(tab.id,{confirmed:false,code:'execution_failed'},pendingRequest);
-  return completion;
+  if (generation!==revision) return {requested:false,confirmed:false,code:'cancelled'};
+  if (core.usageUrl(tab?.url)) {
+    return waitForTabRead(tab.id,generation,()=>navigate({frameId:0,tabId:tab.id,url:tab.url}));
+  }
+  const tabs=(await chrome.tabs.query({url:'https://gemini.google.com/*'}))||[];
+  if (generation!==revision) return {requested:false,confirmed:false,code:'cancelled'};
+  const usageTab=tabs.find(t=>t?.id && core.usageUrl(t.url));
+  if (usageTab) {
+    if (typeof chrome.tabs.reload!=='function') return {requested:false,confirmed:false,code:'execution_failed'};
+    return waitForTabRead(usageTab.id,generation,async()=>{await chrome.tabs.reload(usageTab.id);return true;});
+  }
+  if (typeof chrome.tabs.create!=='function') return {requested:false,confirmed:false,code:'blocked_route'};
+  try {
+    const created=await chrome.tabs.create({url:usageTargetUrl(tab?.url),active:false});
+    if (generation!==revision || !created?.id) return {requested:false,confirmed:false,code:'execution_failed'};
+    return waitForTabRead(created.id,generation,async()=>true);
+  } catch {
+    return {requested:false,confirmed:false,code:'execution_failed'};
+  }
 }
 async function enabled() {
   if (!await chrome.permissions.contains(core.permission)) return false;
@@ -52,6 +97,7 @@ async function stopAll() {
 }
 async function disable(remove = false, erase = false) {
   await stopAll();
+  if (erase) updateBadge(null);
   if (await chrome.permissions.contains({permissions:['storage']})) {
     if (erase) await chrome.storage.local.clear();
     else await chrome.storage.local.set({autoEnabled:false});
@@ -144,7 +190,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
         const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
         const auto = await enabled();
         const freshness = core.freshness(snapshot,Date.now(),auto && core.usageUrl(tab?.url));
-        if (freshness === 'unavailable') await chrome.storage.local.remove('lastSnapshot');
+        if (freshness === 'unavailable') { await chrome.storage.local.remove('lastSnapshot'); updateBadge(null); }
         return {enabled:auto,snapshot:freshness==='unavailable'?null:snapshot,freshness};
       }
       return {};
@@ -182,6 +228,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
       reportRead(sender.tab.id,observed,{confirmed:false,code:'storage_failed'});
       return {accepted:false,code:'storage_failed'};
     }
+    updateBadge(snapshot);
     diagnostic.last_code='persisted';diagnostic.publications++;
     reportRead(sender.tab.id,observed,{confirmed:true,code:unchanged?'unchanged':'updated'});
     return {accepted:true,code:'persisted'};
