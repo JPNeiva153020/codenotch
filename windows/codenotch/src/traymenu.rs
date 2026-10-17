@@ -478,4 +478,23 @@ mod tests {
             assert!(page.contains(&format!("'{name}':'{korean}'")), "Korean card and tray disagree on {name:?}");
         }
     }
+
+    #[test]
+    fn gemini_web_windows_format_in_tray_menu() {
+        let snap = UsageSnapshot {
+            status: "ok".into(),
+            fetched_at: MIN,
+            account: Some("Gemini Web".into()),
+            windows: vec![
+                window("Current session", 0.48, None),
+                window("Weekly limit", 0.12, None),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(header("Gemini Web", Some(0.48), None, 2 * MIN, "pt-BR"), "Gemini Web — 48%");
+        let lines = provider_lines(&snap, 2 * MIN, "pt-BR");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("Sessão atual: 48% usado"));
+        assert!(lines[1].starts_with("Limite semanal: 12% usado"));
+    }
 }

@@ -270,6 +270,7 @@ pub fn tr(lang: &str, key: &str) -> &'static str {
         ("ru", "keep_open") => "Оставить открытым",
         ("uk", "keep_open") => "Тримати відкритим",
         (_, "keep_open") => "Keep open",
+        (_, "gemini_web") => "Gemini Web",
         _ => "?",
     }
 }

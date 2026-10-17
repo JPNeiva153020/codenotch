@@ -24,6 +24,12 @@ function updateBadge(snapshot) {
     void chrome.action?.setBadgeText?.({ text: `${used}%` });
   } catch {}
 }
+function notifyNativeHost(snapshot) {
+  try {
+    const res = chrome.runtime?.sendNativeMessage?.('com.codenotch.gemini_web', snapshot, () => void chrome.runtime?.lastError);
+    if (res && typeof res.catch === 'function') res.catch(() => {});
+  } catch {}
+}
 function usageTargetUrl(raw) {
   try {
     const u = new URL(raw);
@@ -247,6 +253,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
       return {accepted:false,code:'storage_failed'};
     }
     updateBadge(snapshot);
+    notifyNativeHost(snapshot);
     diagnostic.last_code='persisted';diagnostic.publications++;
     reportRead(sender.tab.id,observed,{confirmed:true,code:unchanged?'unchanged':'updated'});
     return {accepted:true,code:'persisted'};

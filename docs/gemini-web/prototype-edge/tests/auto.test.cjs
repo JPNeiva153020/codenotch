@@ -62,13 +62,13 @@ test('exceção inesperada encerra controlador sem loop ou log',async()=>{
 });
 function event(){const list=[];return {addListener(fn,filter){list.push({fn,filter});},removeListener(fn){const i=list.findIndex(x=>x.fn===fn);if(i>=0)list.splice(i,1);},hasListener:fn=>list.some(x=>x.fn===fn),list};}
 function worker(data={}) {
-  let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],otherTabs=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
+  let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],otherTabs=[],nativeMessages=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
   const tab={id:1,url:'https://gemini.google.com/u/0/usage'};
-  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages}};
+  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages,sendNativeMessage:(host,payload,cb)=>{nativeMessages.push({host,payload});if(typeof cb==='function')cb({ok:true});}}};
   const ctx=vm.createContext({URL,Date,chrome,Set,Promise,setTimeout:fn=>setTimeout(fn,20),clearTimeout});ctx.importScripts=filename=>vm.runInContext(code(filename),ctx);vm.runInContext(code('auto-worker.js'),ctx);
   const popup={id:chrome.runtime.id,url:chrome.runtime.getURL('popup.html')};
   const message=(m,sender=popup)=>new Promise(resolve=>{const accepted=events.messages.list[0].fn(m,sender,resolve);if(!accepted)resolve(null);});
-  return {data,tab,otherTabs,reloaded,created,badge,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
+  return {data,tab,otherTabs,reloaded,created,nativeMessages,badge,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
 }
 test('worker desativado por padrão não injeta nem persiste',async()=>{
   const w=worker();await w.events.complete.list[0].fn({frameId:0,tabId:1,url:w.tab.url});assert.equal(w.injections.length,0);assert.equal(Object.keys(w.data).length,0);
@@ -98,7 +98,7 @@ test('desativado conserva acesso apenas ao último histórico até apagar',async
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
 test('configuração mínima: opcionais sem content scripts permanentes',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.deepEqual(m.permissions,['activeTab','scripting']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
+  const m=JSON.parse(code('manifest.json'));assert.deepEqual(m.permissions,['activeTab','scripting']);assert.deepEqual(m.optional_permissions,['storage','webNavigation','nativeMessaging']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
 });
 test('novos scripts sem rede, cookies, tokens, código remoto ou logs',()=>{
   for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js']){
@@ -266,5 +266,26 @@ test('popup ao abrir dispara AUTO_RECHECK automático somente quando enabled=tru
   assert.match(staleOpen.elements['auto-status'].textContent,/confirmada e persistida/u);
   assert.equal(JSON.parse(staleOpen.elements['auto-result'].textContent).windows[0].used_percent,35);
 });
+
+test('AUTO_SNAPSHOT notifica host nativo com.codenotch.gemini_web e tolera falha de sendNativeMessage',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  const sender={id:'test-extension',url:w.tab.url,tab:{id:1}};
+  const snap=sample();snap.observed_at_ms=Date.now()-2000;snap.windows[0].used_percent=48;
+  const res1=await w.message({type:'AUTO_SNAPSHOT',snapshot:{...snap,extra:'NAO_ENVIAR'}},sender);
+  assert.equal(res1.accepted,true);
+  assert.equal(w.nativeMessages.length,1);
+  assert.equal(w.nativeMessages[0].host,'com.codenotch.gemini_web');
+  assert.equal(w.nativeMessages[0].payload.provider,'gemini_web');
+  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,48);
+  assert.equal('extra' in w.nativeMessages[0].payload,false);
+
+  w.chrome.runtime.sendNativeMessage=()=>{throw new Error('Specified native messaging host not found.');};
+  const snap2=sample();snap2.observed_at_ms=Date.now()-1000;snap2.windows[0].used_percent=52;
+  const res2=await w.message({type:'AUTO_SNAPSHOT',snapshot:snap2},sender);
+  assert.equal(res2.accepted,true);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,52);
+  assert.equal(w.badge.text,'52%');
+});
+
 
 

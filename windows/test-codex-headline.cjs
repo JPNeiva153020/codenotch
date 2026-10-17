@@ -47,4 +47,6 @@ test('Marker extraction does not depend on neighbouring function order', () => {
 test('Other provider headline selection is unchanged', () => {
   assert.equal(pick([{ id: 'weekly_all' }, { id: 'session' }], 'claude'), 'session');
   assert.equal(pick([{ id: 'on_demand' }, { id: 'included' }], 'cursor'), 'included');
+  assert.equal(pick([{ id: 'weekly' }, { id: 'current' }], 'gemini_web'), 'current');
+  assert.equal(context.weeklyOf({ windows: [{ id: 'current' }, { id: 'weekly', used: 0.12 }] }, 'gemini_web').id, 'weekly');
 });
