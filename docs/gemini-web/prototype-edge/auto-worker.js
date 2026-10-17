@@ -6,6 +6,8 @@ const navigations = new Map();
 const navigationQueues = new Map();
 const pendingReads = new Map();
 const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0};
+const CHAT_AUTO_REFRESH_COOLDOWN_MS = 180000;
+let lastBgRefreshTriggerAt = 0;
 let revision = 0;
 let serial = Promise.resolve();
 const locked = task => { const next = serial.then(task, task); serial = next.catch(() => {}); return next; };
@@ -97,7 +99,7 @@ async function stopAll() {
 }
 async function disable(remove = false, erase = false) {
   await stopAll();
-  if (erase) updateBadge(null);
+  if (erase) { updateBadge(null); lastBgRefreshTriggerAt = 0; }
   if (await chrome.permissions.contains({permissions:['storage']})) {
     if (erase) await chrome.storage.local.clear();
     else await chrome.storage.local.set({autoEnabled:false});
@@ -121,7 +123,23 @@ async function performNavigation(details,generation,ticket) {
     // Also stop an old content context when worker memory has been discarded.
     await chrome.tabs.sendMessage(details.tabId, {type:'AUTO_STOP'}).catch(() => {});
     activeTabs.delete(details.tabId);
-    if (!core.usageUrl(details.url) || !await enabled()) return false;
+    if (!await enabled()) return false;
+    if (!core.usageUrl(details.url)) {
+      if (core.chatUrl(details.url) && Date.now() - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
+        const tabs = (await chrome.tabs.query({url:'https://gemini.google.com/*'})) || [];
+        const usageTab = tabs.find(t => t?.id && t.id !== details.tabId && core.usageUrl(t.url));
+        if (usageTab && typeof chrome.tabs.reload === 'function') {
+          const last = (await chrome.storage.local.get('lastSnapshot')).lastSnapshot;
+          const now = Date.now();
+          const observedAt = last?.observed_at_ms;
+          if (generation === revision && (!Number.isFinite(observedAt) || now - observedAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) && now - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
+            lastBgRefreshTriggerAt = now;
+            await chrome.tabs.reload(usageTab.id);
+          }
+        }
+      }
+      return false;
+    }
     const tab = await chrome.tabs.get(details.tabId);
     if (generation !== revision || navigations.get(details.tabId) !== ticket || tab.url !== details.url || !core.usageUrl(tab.url)) return false;
     activeTabs.add(details.tabId);

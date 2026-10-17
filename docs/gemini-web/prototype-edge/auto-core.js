@@ -6,6 +6,10 @@
     try { const u = new URL(raw); return u.origin === 'https://gemini.google.com' && !u.username && !u.password && /^\/u\/\d+\/usage\/?$/u.test(u.pathname); }
     catch { return false; }
   }
+  function chatUrl(raw) {
+    try { const u = new URL(raw); return u.origin === 'https://gemini.google.com' && !u.username && !u.password && !usageUrl(raw) && /^\/(?:u\/\d+\/)?app(?:\/|$)/u.test(u.pathname); }
+    catch { return false; }
+  }
   function minimal(raw, now = Date.now()) {
     if (!raw || raw.status !== 'observed' || raw.provider !== 'gemini_web' || !Array.isArray(raw.issues) || raw.issues.length || !Array.isArray(raw.windows) || raw.windows.length !== 2) return null;
     const windows = [];
@@ -29,5 +33,5 @@
     if (!Number.isFinite(age) || age < 0 || age > 86400000) return 'unavailable';
     return age <= 300000 && onUsage ? 'recent' : 'historical';
   }
-  globalThis.GeminiAutoCore = Object.freeze({ permission, usageUrl, minimal, fingerprint, freshness });
+  globalThis.GeminiAutoCore = Object.freeze({ permission, usageUrl, chatUrl, minimal, fingerprint, freshness });
 })();

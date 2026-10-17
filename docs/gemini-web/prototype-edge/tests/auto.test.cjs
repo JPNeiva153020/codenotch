@@ -221,3 +221,50 @@ test('AUTO_RECHECK em conversa localiza e recarrega aba /usage existente em 2º 
   assert.equal(result.confirmed,true);assert.equal(result.code,'updated');assert.equal(w.badge.text,'62%');assert.equal(w.badge.color,'#d97706');
 });
 
+test('chatUrl reconhece rotas /app e /u/<id>/app e rejeita /usage, credenciais ou outros domínios',()=>{
+  const c=policy().GeminiAutoCore;
+  for(const url of ['https://gemini.google.com/app','https://gemini.google.com/app/','https://gemini.google.com/app/abc123','https://gemini.google.com/u/0/app','https://gemini.google.com/u/0/app/123']){
+    assert.equal(c.chatUrl(url),true,url);
+  }
+  for(const url of ['https://gemini.google.com/u/0/usage','https://gemini.google.com/usage','https://gemini.google.com/u/abc/app','http://gemini.google.com/u/0/app','https://gemini.google.com.evil.invalid/u/0/app','https://user:pass@gemini.google.com/u/0/app']){
+    assert.equal(c.chatUrl(url),false,url);
+  }
+});
+
+test('navegação em /u/0/app recarrega aba /u/0/usage em 2º plano respeitando cooldown de 3m sem criar abas',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/u/0/app';
+  await w.events.spa.list[0].fn({frameId:0,tabId:1,url:w.tab.url});
+  assert.equal(w.reloaded.length,0);assert.equal(w.created.length,0);
+  const bgTab={id:55,url:'https://gemini.google.com/u/0/usage'};
+  w.otherTabs.push(bgTab);
+  await w.events.spa.list[0].fn({frameId:0,tabId:1,url:'https://gemini.google.com/u/0/app/123'});
+  assert.deepEqual(w.reloaded,[55]);assert.equal(w.created.length,0);
+  await w.events.spa.list[0].fn({frameId:0,tabId:1,url:'https://gemini.google.com/u/0/app/456'});
+  assert.deepEqual(w.reloaded,[55]);
+});
+
+test('popup ao abrir dispara AUTO_RECHECK automático somente quando enabled=true, fora de /usage e snapshot > 60s',async()=>{
+  function openPopupWithState(initialState,updatedState){
+    const elements=Object.fromEntries(['auto-result','auto-status','auto-enable','auto-disable','auto-erase','auto-state','auto-recheck'].map(id=>[id,{textContent:'',addEventListener(_,fn){this.click=fn;}}]));
+    const ctx=policy();const sent=[];let stateCalls=0;
+    ctx.document={getElementById:id=>elements[id]};
+    ctx.chrome={permissions:{request:async()=>false,remove:async()=>true},runtime:{sendMessage:async m=>{sent.push(m.type);if(m.type==='AUTO_STATE')return (++stateCalls===1)?initialState:(updatedState||initialState);if(m.type==='AUTO_RECHECK')return {requested:true,confirmed:true,code:'updated'};return {};}}};
+    vm.runInContext(code('auto-popup.js'),ctx);
+    return {elements,sent};
+  }
+  const freshSnap=sample();freshSnap.observed_at_ms=Date.now()-15000;
+  const recentOpen=openPopupWithState({enabled:true,freshness:'historical',snapshot:freshSnap});
+  await flush();await flush();
+  assert.deepEqual(recentOpen.sent,['AUTO_STATE']);
+
+  const staleSnap=sample();staleSnap.observed_at_ms=Date.now()-65000;staleSnap.windows[0].used_percent=20;
+  const updatedSnap=sample();updatedSnap.observed_at_ms=Date.now();updatedSnap.windows[0].used_percent=35;
+  const staleOpen=openPopupWithState({enabled:true,freshness:'historical',snapshot:staleSnap},{enabled:true,freshness:'historical',snapshot:updatedSnap});
+  await flush();await flush();await flush();
+  assert.deepEqual(staleOpen.sent,['AUTO_STATE','AUTO_RECHECK','AUTO_STATE']);
+  assert.match(staleOpen.elements['auto-status'].textContent,/confirmada e persistida/u);
+  assert.equal(JSON.parse(staleOpen.elements['auto-result'].textContent).windows[0].used_percent,35);
+});
+
+
