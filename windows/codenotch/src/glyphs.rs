@@ -36,7 +36,7 @@ const BUILTIN: [(&str, &str); 8] = [
     ("grok", include_str!("../glyphs/grok.svg")),
     ("copilot", include_str!("../glyphs/copilot.svg")),
     ("gemini", include_str!("../glyphs/gemini.svg")),
-    ("gemini_web", include_str!("../glyphs/gemini.svg")),
+    ("gemini_web", include_str!("glyphs/gemini_web.svg")),
     ("opencode", include_str!("../glyphs/opencode.svg")),
 ];
 

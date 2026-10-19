@@ -50,3 +50,13 @@ test('Other provider headline selection is unchanged', () => {
   assert.equal(pick([{ id: 'weekly' }, { id: 'current' }], 'gemini_web'), 'current');
   assert.equal(context.weeklyOf({ windows: [{ id: 'current' }, { id: 'weekly', used: 0.12 }] }, 'gemini_web').id, 'weekly');
 });
+test('Gemini Web uses dedicated 4-pointed sparkle SVG icon', () => {
+  const starPath = 'M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z';
+  const svgSrc = readFileSync(join(__dirname, 'codenotch/src/glyphs/gemini_web.svg'), 'utf8');
+  const svgRoot = readFileSync(join(__dirname, 'codenotch/glyphs/gemini_web.svg'), 'utf8');
+  const glyphsRs = readFileSync(join(__dirname, 'codenotch/src/glyphs.rs'), 'utf8');
+  assert.ok(svgSrc.includes(starPath));
+  assert.ok(svgRoot.includes(starPath));
+  assert.ok(glyphsRs.includes('("gemini_web", include_str!("glyphs/gemini_web.svg"))'));
+  assert.ok(html.includes(starPath));
+});

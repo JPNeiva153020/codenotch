@@ -44,6 +44,23 @@ function hasOnlyAllowedKeys(obj, allowed) {
   return Object.keys(obj).every(k => allowed.has(k));
 }
 
+function computeResetEpochMs(r, observedAtMs) {
+  if (r.epoch_ms !== null && Number.isInteger(r.epoch_ms)) return r.epoch_ms;
+  const now = new Date(observedAtMs);
+  if (r.day !== null && r.month !== null) {
+    let dt = new Date(now.getFullYear(), r.month - 1, r.day, r.hour, r.minute, 0, 0);
+    if (observedAtMs - dt.getTime() > 30 * 86400000) {
+      dt = new Date(now.getFullYear() + 1, r.month - 1, r.day, r.hour, r.minute, 0, 0);
+    }
+    return dt.getTime();
+  }
+  const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), r.hour, r.minute, 0, 0);
+  if (dt.getTime() <= observedAtMs - 60000) {
+    dt.setDate(dt.getDate() + 1);
+  }
+  return dt.getTime();
+}
+
 function validateSnapshot(raw) {
   if (!hasOnlyAllowedKeys(raw, ALLOWED_ROOT_KEYS)) return null;
   if (!Number.isFinite(raw.observed_at_ms) || raw.observed_at_ms <= 0) return null;
@@ -52,7 +69,14 @@ function validateSnapshot(raw) {
     if (!hasOnlyAllowedKeys(w, ALLOWED_WINDOW_KEYS)) return null;
     if (!hasOnlyAllowedKeys(w.reset, ALLOWED_RESET_KEYS)) return null;
   }
-  return core.minimal(raw, raw.observed_at_ms);
+  const min = core.minimal(raw, raw.observed_at_ms);
+  if (!min) return null;
+  for (const w of min.windows) {
+    if (w.reset && w.reset.epoch_ms === null && Number.isInteger(w.reset.hour) && Number.isInteger(w.reset.minute)) {
+      w.reset.epoch_ms = computeResetEpochMs(w.reset, min.observed_at_ms);
+    }
+  }
+  return min;
 }
 
 function readBytes(fd, length) {

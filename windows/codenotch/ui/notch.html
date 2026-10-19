@@ -1109,8 +1109,9 @@ function workState(id){
   if(acts.some(a=>a.state==='busy')) return 'running';
   return 'idle';
 }
+const GEMINI_WEB_SVG='<svg fill="currentColor" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Gemini</title><path d="M12 2C12 7.52 16.48 12 22 12C16.48 12 12 16.48 12 22C12 16.48 7.52 12 2 12C7.52 12 12 7.52 12 2Z"/></svg>';
 function glyphHtml(p,small){
-  const g=glyphs[p.base||p.id]||(p.base==='gemini_web'?glyphs.gemini:null);
+  const g=glyphs[p.base||p.id]||(p.base==='gemini_web'?{kind:'svg',svg:GEMINI_WEB_SVG}:null);
   if(g&&g.kind==='svg'&&g.svg) return `<span class="mark">${g.svg}</span>`;
   if(g&&g.url) return `<img class="${g.kind}" src="${g.url}" alt="${p.name}"${small?' style="width:16px;height:16px;border-radius:4px"':''}>`;
   return small?'':p.glyph; // fallback letter

@@ -8,6 +8,7 @@ const pendingReads = new Map();
 const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0};
 const CHAT_AUTO_REFRESH_COOLDOWN_MS = 180000;
 let lastBgRefreshTriggerAt = 0;
+let lastProfileId = null;
 let revision = 0;
 let serial = Promise.resolve();
 const locked = task => { const next = serial.then(task, task); serial = next.catch(() => {}); return next; };
@@ -30,13 +31,34 @@ function notifyNativeHost(snapshot) {
     if (res && typeof res.catch === 'function') res.catch(() => {});
   } catch {}
 }
-function usageTargetUrl(raw) {
+function extractProfileId(raw) {
   try {
     const u = new URL(raw);
-    if (u.origin !== 'https://gemini.google.com' || u.username || u.password) return 'https://gemini.google.com/usage';
+    if (u.origin !== 'https://gemini.google.com' || u.username || u.password) return null;
     const m = /^\/u\/(\d+)(?:\/|$)/u.exec(u.pathname);
-    return m ? `https://gemini.google.com/u/${m[1]}/usage` : 'https://gemini.google.com/usage';
-  } catch { return 'https://gemini.google.com/usage'; }
+    if (m) {
+      lastProfileId = m[1];
+      return m[1];
+    }
+    return null;
+  } catch { return null; }
+}
+async function queryGeminiTabs() {
+  const tabs = (await chrome.tabs.query({ url: 'https://gemini.google.com/*' })) || [];
+  for (const t of tabs) extractProfileId(t?.url);
+  return tabs;
+}
+function usageTargetUrl(raw, tabs = []) {
+  const direct = extractProfileId(raw);
+  if (direct !== null) return `https://gemini.google.com/u/${direct}/usage`;
+  if (Array.isArray(tabs)) {
+    for (const t of tabs) {
+      const pid = extractProfileId(t?.url);
+      if (pid !== null) return `https://gemini.google.com/u/${pid}/usage`;
+    }
+  }
+  if (lastProfileId !== null) return `https://gemini.google.com/u/${lastProfileId}/usage`;
+  return 'https://gemini.google.com/usage';
 }
 function finishRead(tabId,result,expected) {
   const pending=pendingReads.get(tabId);
@@ -67,11 +89,12 @@ async function recheck() {
   const generation=revision;
   if (!await enabled()) return {requested:false,confirmed:false,code:'not_authorized'};
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+  extractProfileId(tab?.url);
   if (generation!==revision) return {requested:false,confirmed:false,code:'cancelled'};
   if (core.usageUrl(tab?.url)) {
     return waitForTabRead(tab.id,generation,()=>navigate({frameId:0,tabId:tab.id,url:tab.url}));
   }
-  const tabs=(await chrome.tabs.query({url:'https://gemini.google.com/*'}))||[];
+  const tabs=await queryGeminiTabs();
   if (generation!==revision) return {requested:false,confirmed:false,code:'cancelled'};
   const usageTab=tabs.find(t=>t?.id && core.usageUrl(t.url));
   if (usageTab) {
@@ -80,9 +103,13 @@ async function recheck() {
   }
   if (typeof chrome.tabs.create!=='function') return {requested:false,confirmed:false,code:'blocked_route'};
   try {
-    const created=await chrome.tabs.create({url:usageTargetUrl(tab?.url),active:false});
+    const created=await chrome.tabs.create({url:usageTargetUrl(tab?.url,tabs),active:false});
     if (generation!==revision || !created?.id) return {requested:false,confirmed:false,code:'execution_failed'};
-    return waitForTabRead(created.id,generation,async()=>true);
+    try {
+      return await waitForTabRead(created.id,generation,async()=>true);
+    } finally {
+      try { await chrome.tabs.remove?.(created.id); } catch {}
+    }
   } catch {
     return {requested:false,confirmed:false,code:'execution_failed'};
   }
@@ -105,7 +132,7 @@ async function stopAll() {
 }
 async function disable(remove = false, erase = false) {
   await stopAll();
-  if (erase) { updateBadge(null); lastBgRefreshTriggerAt = 0; }
+  if (erase) { updateBadge(null); lastBgRefreshTriggerAt = 0; lastProfileId = null; }
   if (await chrome.permissions.contains({permissions:['storage']})) {
     if (erase) await chrome.storage.local.clear();
     else await chrome.storage.local.set({autoEnabled:false});
@@ -114,6 +141,7 @@ async function disable(remove = false, erase = false) {
 }
 function navigate(details) {
   if (details.frameId !== 0) return;
+  extractProfileId(details.url);
   const generation = revision;
   const ticket = {};
   navigations.set(details.tabId,ticket);
@@ -126,21 +154,30 @@ function navigate(details) {
 async function performNavigation(details,generation,ticket) {
   try {
     if (generation!==revision || navigations.get(details.tabId)!==ticket) return false;
+    extractProfileId(details.url);
     // Also stop an old content context when worker memory has been discarded.
     await chrome.tabs.sendMessage(details.tabId, {type:'AUTO_STOP'}).catch(() => {});
     activeTabs.delete(details.tabId);
     if (!await enabled()) return false;
     if (!core.usageUrl(details.url)) {
       if (core.chatUrl(details.url) && Date.now() - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
-        const tabs = (await chrome.tabs.query({url:'https://gemini.google.com/*'})) || [];
-        const usageTab = tabs.find(t => t?.id && t.id !== details.tabId && core.usageUrl(t.url));
-        if (usageTab && typeof chrome.tabs.reload === 'function') {
-          const last = (await chrome.storage.local.get('lastSnapshot')).lastSnapshot;
-          const now = Date.now();
-          const observedAt = last?.observed_at_ms;
-          if (generation === revision && (!Number.isFinite(observedAt) || now - observedAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) && now - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
+        const tabs = await queryGeminiTabs();
+        const last = (await chrome.storage.local.get('lastSnapshot')).lastSnapshot;
+        const now = Date.now();
+        const observedAt = last?.observed_at_ms;
+        if (generation === revision && (!Number.isFinite(observedAt) || now - observedAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) && now - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
+          const usageTab = tabs.find(t => t?.id && t.id !== details.tabId && core.usageUrl(t.url));
+          if (usageTab && typeof chrome.tabs.reload === 'function') {
             lastBgRefreshTriggerAt = now;
             await chrome.tabs.reload(usageTab.id);
+          } else if (!usageTab && typeof chrome.tabs.create === 'function') {
+            lastBgRefreshTriggerAt = now;
+            const created = await chrome.tabs.create({ url: usageTargetUrl(details.url, tabs), active: false });
+            if (created?.id) {
+              void waitForTabRead(created.id, generation, async () => true).finally(async () => {
+                try { await chrome.tabs.remove?.(created.id); } catch {}
+              });
+            }
           }
         }
       }
@@ -167,11 +204,11 @@ chrome.permissions.onAdded.addListener(() => listen());
 chrome.permissions.onRemoved.addListener(() => { void disable().catch(() => {}); });
 chrome.tabs.onRemoved.addListener(id => {activeTabs.delete(id);navigations.delete(id);});
 chrome.tabs.onActivated.addListener(async details => {
-  try { const tab=await chrome.tabs.get(details.tabId); if (core.usageUrl(tab.url)) await navigate({frameId:0,tabId:tab.id,url:tab.url}); } catch {}
+  try { const tab=await chrome.tabs.get(details.tabId); extractProfileId(tab?.url); if (core.usageUrl(tab.url) || core.chatUrl(tab.url)) await navigate({frameId:0,tabId:tab.id,url:tab.url}); } catch {}
 });
 chrome.windows?.onFocusChanged.addListener(async windowId => {
   if (windowId < 0) return;
-  try { const [tab]=await chrome.tabs.query({active:true,windowId}); if (core.usageUrl(tab?.url)) await navigate({frameId:0,tabId:tab.id,url:tab.url}); } catch {}
+  try { const [tab]=await chrome.tabs.query({active:true,windowId}); extractProfileId(tab?.url); if (core.usageUrl(tab?.url) || core.chatUrl(tab?.url)) await navigate({frameId:0,tabId:tab.id,url:tab.url}); } catch {}
 });
 chrome.runtime.onMessage.addListener((message,sender,reply) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -212,6 +249,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
         const cachedTime=data.lastSnapshot?.observed_at_ms;
         const snapshot = Number.isFinite(cachedTime)?core.minimal(data.lastSnapshot,cachedTime):null;
         const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+        extractProfileId(tab?.url);
         const auto = await enabled();
         const freshness = core.freshness(snapshot,Date.now(),auto && core.usageUrl(tab?.url));
         if (freshness === 'unavailable') { await chrome.storage.local.remove('lastSnapshot'); updateBadge(null); }
@@ -221,6 +259,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
       return {};
     }
     if (!['AUTO_CHECK','AUTO_SNAPSHOT'].includes(type) || !core.usageUrl(sender.url) || (sender.frameId!==undefined && sender.frameId!==0)) {diagnostic.last_code='blocked_route';return {enabled:false,accepted:false,code:'blocked_route'};}
+    extractProfileId(sender.url);
     const generation = arrivedAtRevision;
     if (generation !== revision) return {enabled:false,accepted:false};
     if (!await enabled()) return {enabled:false,accepted:false};

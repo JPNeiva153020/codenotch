@@ -92,8 +92,10 @@ test('host nativo grava arquivo JSON sanitizado, responde {"ok":true} e sai com 
     assert.equal(saved.windows.length, 2);
     assert.equal(saved.windows[0].id, 'current');
     assert.equal(saved.windows[0].used_percent, 48);
+    assert.equal(Number.isInteger(saved.windows[0].reset.epoch_ms) && saved.windows[0].reset.epoch_ms > 0, true);
     assert.equal(saved.windows[1].id, 'weekly');
     assert.equal(saved.windows[1].used_percent, 12);
+    assert.equal(Number.isInteger(saved.windows[1].reset.epoch_ms) && saved.windows[1].reset.epoch_ms > 0, true);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
