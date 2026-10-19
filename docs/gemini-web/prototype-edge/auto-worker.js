@@ -7,6 +7,7 @@ const navigationQueues = new Map();
 const pendingReads = new Map();
 const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0};
 const CHAT_AUTO_REFRESH_COOLDOWN_MS = 180000;
+const ALARM_STALE_THRESHOLD_MS = 55000;
 const AUTO_REFRESH_ALARM = 'gemini-web-auto-refresh';
 const POLL_MAX_ATTEMPTS = 20;
 const POLL_INTERVAL_MS = 600;
@@ -20,7 +21,7 @@ let serial = Promise.resolve();
 const locked = task => { const next = serial.then(task, task); serial = next.catch(() => {}); return next; };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function ensureAlarm() {
-  try { chrome.alarms?.create?.(AUTO_REFRESH_ALARM, { periodInMinutes: 2 }); } catch {}
+  try { chrome.alarms?.create?.(AUTO_REFRESH_ALARM, { delayInMinutes: 1, periodInMinutes: 1 }); } catch {}
 }
 function clearAlarm() {
   try { void chrome.alarms?.clear?.(AUTO_REFRESH_ALARM); } catch {}
@@ -193,12 +194,25 @@ async function ingestSnapshot(tabId, sourceUrl, rawSnapshot, generation) {
   reportRead(tabId,observed,{confirmed:true,code:unchanged?'unchanged':'updated'});
   return {accepted:true,code:'persisted'};
 }
+async function injectVisibilityShim(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      world: 'MAIN',
+      injectImmediately: true,
+      files: ['visibility-shim.js']
+    });
+  } catch {}
+}
 async function pollUsageTab(tabId, generation, ticket = null) {
   try {
     if (generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
     const firstTab = await chrome.tabs.get(tabId);
     if (!firstTab || !core.usageUrl(firstTab.url)) return false;
     activeTabs.add(tabId);
+    if (firstTab.active === false) {
+      await injectVisibilityShim(tabId);
+    }
     const firstRes = await chrome.scripting.executeScript({
       target: { tabId, frameIds: [0] },
       world: 'ISOLATED',
@@ -211,11 +225,13 @@ async function pollUsageTab(tabId, generation, ticket = null) {
       await locked(() => ingestSnapshot(tabId, firstTab.url, initialRaw, generation));
       return true;
     }
+    await injectVisibilityShim(tabId);
     for (let attempt = 2; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
       await delay(POLL_INTERVAL_MS);
       if (generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
       const tab = await chrome.tabs.get(tabId);
       if (!tab || !core.usageUrl(tab.url)) return false;
+      await injectVisibilityShim(tabId);
       const execRes = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [0] },
         world: 'ISOLATED',
@@ -334,7 +350,7 @@ function navigate(details) {
   navigationQueues.set(details.tabId,task);
   return task.finally(()=>{if(navigationQueues.get(details.tabId)===task)navigationQueues.delete(details.tabId);});
 }
-async function triggerBackgroundRefresh(sourceUrl, excludeTabId, generation) {
+async function triggerBackgroundRefresh(sourceUrl, excludeTabId, generation, immediate = false) {
   const tabs = await queryGeminiTabs();
   const stored = await chrome.storage.local.get(['lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
   if (stored?.lastAccountTier && !lastAccountTier) lastAccountTier = stored.lastAccountTier;
@@ -348,12 +364,15 @@ async function triggerBackgroundRefresh(sourceUrl, excludeTabId, generation) {
   } else if (!usageTab && typeof chrome.tabs.create === 'function') {
     const created = await chrome.tabs.create({ url: targetUrl, active: false });
     if (created?.id) {
-      void waitForTabRead(created.id, generation, async () => {
+      const p = waitForTabRead(created.id, generation, async () => {
+        if (immediate) return await pollUsageTab(created.id, generation, null);
         void delay(POLL_INTERVAL_MS).then(() => { if (pendingReads.has(created.id)) void pollUsageTab(created.id, generation, null); });
         return true;
       }).finally(async () => {
         try { await chrome.tabs.remove?.(created.id); } catch {}
       });
+      if (immediate) return await p;
+      void p;
     }
   }
 }
@@ -373,7 +392,7 @@ async function performNavigation(details,generation,ticket) {
         const observedAt = last?.observed_at_ms;
         if (generation === revision && (!Number.isFinite(observedAt) || now - observedAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) && now - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
           lastBgRefreshTriggerAt = now;
-          await triggerBackgroundRefresh(details.url, details.tabId, generation);
+          await triggerBackgroundRefresh(details.url, details.tabId, generation, false);
         }
       }
       return false;
@@ -399,15 +418,19 @@ chrome.alarms?.onAlarm?.addListener(async alarm => {
   if (alarm?.name !== AUTO_REFRESH_ALARM) return;
   try {
     if (!await enabled()) return;
+    const stored = await chrome.storage.local.get(['lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
+    if (stored?.lastAccountTier && !lastAccountTier) lastAccountTier = stored.lastAccountTier;
+    if (stored?.lastKnownUsageUrl && !lastKnownUsageUrl) lastKnownUsageUrl = stored.lastKnownUsageUrl;
+    const observedAt = stored?.lastSnapshot?.observed_at_ms;
+    if (Number.isFinite(observedAt) && Date.now() - observedAt <= ALARM_STALE_THRESHOLD_MS) return;
     const tabs = await queryGeminiTabs();
-    if (!tabs.length) return;
     const activeUsage = tabs.find(t => t?.id && core.usageUrl(t.url));
     if (activeUsage) {
       void navigate({ frameId: 0, tabId: activeUsage.id, url: activeUsage.url });
       return;
     }
     lastBgRefreshTriggerAt = Date.now();
-    await triggerBackgroundRefresh(tabs[0]?.url, null, revision);
+    await triggerBackgroundRefresh(tabs[0]?.url || null, null, revision, true);
   } catch {}
 });
 chrome.permissions.onAdded.addListener(() => { listen(); ensureAlarm(); });
@@ -417,6 +440,9 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   const candidateUrl = changeInfo?.url || tab?.url;
   if (!candidateUrl) return;
   extractProfileId(candidateUrl);
+  if (changeInfo?.status === 'loading' && core.usageUrl(candidateUrl)) {
+    void injectVisibilityShim(tabId);
+  }
   if (core.usageUrl(candidateUrl) || (changeInfo?.url && core.chatUrl(changeInfo.url))) {
     void navigate({ frameId: 0, tabId, url: candidateUrl });
   }

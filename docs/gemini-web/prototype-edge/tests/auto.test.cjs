@@ -75,13 +75,13 @@ test('exceção inesperada encerra controlador sem loop ou log',async()=>{
 });
 function event(){const list=[];return {addListener(fn,filter){list.push({fn,filter});},removeListener(fn){const i=list.findIndex(x=>x.fn===fn);if(i>=0)list.splice(i,1);},hasListener:fn=>list.some(x=>x.fn===fn),list};}
 function worker(data={}) {
-  let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],removed=[],otherTabs=[],nativeMessages=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
+  let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],removed=[],otherTabs=[],nativeMessages=[],alarmsCreated=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event(),alarm:event()};
   const tab={id:1,url:'https://gemini.google.com/u/0/usage'};
-  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},remove:async id=>{removed.push(id);const i=otherTabs.findIndex(t=>t.id===id);if(i>=0)otherTabs.splice(i,1);},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onUpdated:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages,sendNativeMessage:(host,payload,cb)=>{nativeMessages.push({host,payload});if(typeof cb==='function')cb({ok:true});}}};
+  const chrome={alarms:{create:async(name,info)=>{alarmsCreated.push({name,info});},clear:async()=>true,onAlarm:events.alarm},action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},remove:async id=>{removed.push(id);const i=otherTabs.findIndex(t=>t.id===id);if(i>=0)otherTabs.splice(i,1);},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onUpdated:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages,sendNativeMessage:(host,payload,cb)=>{nativeMessages.push({host,payload});if(typeof cb==='function')cb({ok:true});}}};
   const ctx=vm.createContext({URL,Date,chrome,Set,Promise,setTimeout:fn=>setTimeout(fn,20),clearTimeout});ctx.importScripts=filename=>vm.runInContext(code(filename),ctx);vm.runInContext(code('auto-worker.js'),ctx);
   const popup={id:chrome.runtime.id,url:chrome.runtime.getURL('popup.html')};
   const message=(m,sender=popup)=>new Promise(resolve=>{const accepted=events.messages.list[0].fn(m,sender,resolve);if(!accepted)resolve(null);});
-  return {data,tab,otherTabs,reloaded,created,removed,nativeMessages,badge,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
+  return {data,tab,otherTabs,reloaded,created,removed,nativeMessages,alarmsCreated,badge,events,chrome,injections,sent,message,grant(){granted=true;storageGranted=true;},get granted(){return granted;}};
 }
 test('worker desativado por padrão não injeta nem persiste',async()=>{
   const w=worker();await w.events.complete.list[0].fn({frameId:0,tabId:1,url:w.tab.url});assert.equal(w.injections.length,0);assert.equal(Object.keys(w.data).length,0);
@@ -110,11 +110,12 @@ test('desativação invalida snapshot já enfileirado antes de gravar',async()=>
 test('desativado conserva acesso apenas ao último histórico até apagar',async()=>{
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
-test('configuração mínima: opcionais sem content scripts permanentes',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.2.1');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
+test('configuração mínima: opcionais e shim exclusivo para /usage em document_start no mundo MAIN',()=>{
+  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.2.2');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);
+  assert.deepEqual(m.content_scripts,[{matches:['https://gemini.google.com/usage*','https://gemini.google.com/u/*/usage*'],js:['visibility-shim.js'],run_at:'document_start',world:'MAIN'}]);
 });
 test('novos scripts sem rede, cookies, tokens, código remoto ou logs',()=>{
-  for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js']){
+  for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js','visibility-shim.js']){
     const text=code(file);new vm.Script(text);assert.doesNotMatch(text,/\b(fetch|XMLHttpRequest|WebSocket|sendBeacon|eval)\s*\(|document\.cookie|localStorage|sessionStorage|console\.|new\s+Function\b/);
   }
 });
@@ -150,15 +151,18 @@ test('navegações concorrentes descartam tentativa anterior da mesma aba',async
   assert.equal(w.injections.length,1);
 });
 
-test('reverificar por gesto não pede nem muda permissões e fora de /usage cria, faz polling e fecha aba temporária em 2º plano sem injetar no chat',async()=>{
+test('reverificar por gesto não pede nem muda permissões e fora de /usage cria, injeta MAIN shim + extractor e fecha aba temporária em 2º plano sem injetar no chat',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   assert.equal((await w.message({type:'AUTO_RECHECK'})).requested,true);
   assert.equal(w.injections.length,1);assert.equal(w.granted,true);
   w.tab.url='https://gemini.google.com/u/2/app';
   const r=await w.message({type:'AUTO_RECHECK'});
   assert.equal(r.requested,true);
-  assert.equal(w.injections.length,2);
+  assert.equal(w.injections.length,3);
   assert.equal(w.injections[1].target.tabId,99);
+  assert.equal(w.injections[1].world,'MAIN');
+  assert.equal(w.injections[2].target.tabId,99);
+  assert.equal(w.injections[2].world,'ISOLATED');
   assert.equal(w.created.length,1);
   assert.equal(w.created[0].url,'https://gemini.google.com/u/2/usage?pageId=none');
   assert.equal(w.created[0].active,false);
@@ -433,6 +437,63 @@ test('extractor.js extrai em aba oculta (getClientRects vazio) e diferencia cont
   assert.equal(freeRes.account_tier,'free');
   assert.equal(freeRes.profile_index,'0');
 });
+
+test('alarme gemini-web-auto-refresh executa atualização em 2º plano e atualiza snapshot mesmo com zero abas do Gemini abertas no Edge',async()=>{
+  const staleSnap=sample();staleSnap.observed_at_ms=Date.now()-60000;staleSnap.windows[0].used_percent=71;
+  const w=worker({
+    autoEnabled:true,
+    lastSnapshot:staleSnap,
+    lastKnownUsageUrl:'https://gemini.google.com/u/1/usage?pageId=none',
+    lastAccountTier:'pro'
+  });
+  w.grant();
+  // Simula 0 abas do Gemini abertas no Edge (apenas GitHub aberto)
+  w.tab.url='https://github.com/';
+  w.chrome.tabs.query=async q=>{
+    if(q?.url) return [...w.otherTabs];
+    return [{...w.tab}];
+  };
+  w.chrome.scripting.executeScript=async opts=>{
+    w.injections.push(opts);
+    if(opts.world==='MAIN') return [{}];
+    const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=74;snap.windows[1].used_percent=50;
+    snap.is_pro_tier=true;snap.account_tier='pro';snap.profile_index='1';
+    return [{result:snap}];
+  };
+  await w.events.alarm.list[0].fn({name:'gemini-web-auto-refresh'});
+  assert.equal(w.created.length,1);
+  assert.equal(w.created[0].url,'https://gemini.google.com/u/1/usage?pageId=none');
+  assert.equal(w.created[0].active,false);
+  assert.equal(w.injections.some(i=>i.world==='MAIN' && i.files?.includes('visibility-shim.js')),true);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,74);
+  assert.equal(w.badge.text,'74%');
+  assert.equal(w.nativeMessages.length,1);
+  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,74);
+  assert.deepEqual(w.removed,[99]);
+});
+
+test('visibility-shim.js força document.hidden=false, visibilityState="visible" e executa requestAnimationFrame via fallback quando rAF nativo está pausado em aba oculta',async()=>{
+  const doc={hidden:true,visibilityState:'hidden',addEventListener(){}};
+  const ctx=vm.createContext({
+    Object,Number,Date,Map,
+    document:doc,
+    location:{pathname:'/u/1/usage'},
+    performance:{now:()=>4242},
+    // rAF nativo nunca executa o callback (simulando aba oculta no Chromium)
+    requestAnimationFrame:()=>1,
+    cancelAnimationFrame:()=>{},
+    setTimeout:(fn)=>setTimeout(fn,5),
+    clearTimeout
+  });
+  vm.runInContext(code('visibility-shim.js'),ctx);
+  assert.equal(ctx.document.hidden,false);
+  assert.equal(ctx.document.visibilityState,'visible');
+  let rafCalledWith=null;
+  ctx.requestAnimationFrame(ts=>{rafCalledWith=ts;});
+  await new Promise(r=>setTimeout(r,20));
+  assert.equal(rafCalledWith,4242);
+});
+
 
 
 
