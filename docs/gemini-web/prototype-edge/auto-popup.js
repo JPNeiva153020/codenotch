@@ -36,7 +36,8 @@
       const data=await chrome.runtime.sendMessage({type:'AUTO_STATE'});
       if (current!==action) return;
       const text={recent:'Observação recente; pode ter mudado.',historical:'Observação histórica.',unavailable:'Dados indisponíveis.'};
-      label.textContent=(data?.enabled?'Automático ativado. ':'Automático desativado. ')+(text[data?.freshness]||text.unavailable);
+      const errSuffix=data?.lastRefreshError?.code?` (Última falha bg: ${data.lastRefreshError.code})`:'';
+      label.textContent=(data?.enabled?'Automático ativado. ':'Automático desativado. ')+(text[data?.freshness]||text.unavailable)+errSuffix;
       result.textContent=data?.snapshot?JSON.stringify({...data.snapshot,status:data.freshness==='historical'?'historical':data.snapshot.status},null,2):'';
       syncTopBanner(data);
       const outsideUsage = data?.freshness === 'historical' || data?.freshness === 'unavailable';
@@ -51,8 +52,11 @@
     const current = ++action;
     try {
       // Call directly inside the user gesture; never request on startup.
-      const granted=await chrome.permissions.request(GeminiAutoCore.permission);
-      if (current !== action) { if (granted) await chrome.permissions.remove(GeminiAutoCore.permission); return; }
+      let granted = true;
+      if (typeof chrome.permissions?.request === 'function') {
+        granted = await chrome.permissions.request(GeminiAutoCore.permission);
+      }
+      if (current !== action) { if (granted) try { await chrome.permissions.remove(GeminiAutoCore.permission); } catch {} return; }
       if (!granted) { label.textContent='Consentimento negado. Automático desativado.'; return; }
       await chrome.runtime.sendMessage({type:'AUTO_ENABLE'});
       if (current !== action) { await chrome.runtime.sendMessage({type:'AUTO_DISABLE'}); return; }

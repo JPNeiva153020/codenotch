@@ -92,10 +92,10 @@ test('campos protegidos não são consultados', async () => {
 });
 test('manifesto mínimo e sintaxe do popup', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../manifest.json'), 'utf8'));
-  assert.deepEqual(manifest.permissions, ['activeTab','scripting','nativeMessaging','alarms']); assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.host_permissions, undefined);
-  assert.deepEqual(manifest.optional_permissions,['storage','webNavigation']);
-  assert.deepEqual(manifest.optional_host_permissions,['https://gemini.google.com/*']);
+  assert.deepEqual(manifest.permissions, ['activeTab','scripting','nativeMessaging','alarms','storage','webNavigation','tabs']); assert.equal(manifest.manifest_version, 3);
+  assert.deepEqual(manifest.host_permissions, ['https://gemini.google.com/*']);
+  assert.equal(manifest.optional_permissions, undefined);
+  assert.equal(manifest.optional_host_permissions, undefined);
   assert.equal(manifest.background.service_worker,'auto-worker.js');
   new (require('node:vm').Script)(fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8'));
 });

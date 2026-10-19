@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Gemini Web — protótipo de leitura local",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Leitura manual e automática opcional dos indicadores visíveis. Sem integração ao Codenotch.",
-  "permissions": ["activeTab", "scripting", "nativeMessaging", "alarms"],
-  "optional_permissions": ["storage", "webNavigation"],
-  "optional_host_permissions": ["https://gemini.google.com/*"],
+  "permissions": ["activeTab", "scripting", "nativeMessaging", "alarms", "storage", "webNavigation", "tabs"],
+  "host_permissions": ["https://gemini.google.com/*"],
   "background": { "service_worker": "auto-worker.js" },
   "action": { "default_popup": "popup.html" },
   "content_scripts": [
@@ -17,6 +16,14 @@
       "js": ["visibility-shim.js"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/app*",
+        "https://gemini.google.com/u/*/app*"
+      ],
+      "js": ["chat-trigger.js"],
+      "run_at": "document_idle"
     }
   ],
   "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'" }

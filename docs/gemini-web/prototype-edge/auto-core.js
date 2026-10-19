@@ -44,11 +44,39 @@
     }
     return { schema_version:1, provider:'gemini_web', origin:'visible_ui', collection:'dom_on_authorized_usage', model:null, status:'observed', observed_at_ms:now, windows, issues:[] };
   }
+  const CURRENT_CYCLE_MS = 5 * 3600 * 1000;
+  const WEEKLY_CYCLE_MS = 7 * 86400 * 1000;
+  function applyClockResetIfExpired(snap, now = Date.now()) {
+    if (!snap || typeof snap !== 'object' || !Array.isArray(snap.windows)) return snap;
+    const observedAt = snap.observed_at_ms;
+    if (!Number.isFinite(observedAt) || !Number.isFinite(now) || now < observedAt || now - observedAt > WEEKLY_CYCLE_MS) return snap;
+    let changed = false;
+    const windows = snap.windows.map(w => {
+      const epoch = w?.reset?.epoch_ms;
+      if (!w || !w.reset || !Number.isInteger(epoch) || !(observedAt < epoch && now >= epoch)) return w;
+      changed = true;
+      const cycleMs = w.id === 'weekly' ? WEEKLY_CYCLE_MS : CURRENT_CYCLE_MS;
+      const steps = Math.floor((now - epoch) / cycleMs) + 1;
+      const nextEpoch = epoch + steps * cycleMs;
+      const nextDt = new Date(nextEpoch);
+      const nextReset = {
+        ...w.reset,
+        day: w.reset.day !== null ? nextDt.getDate() : null,
+        month: w.reset.month !== null ? nextDt.getMonth() + 1 : null,
+        hour: nextDt.getHours(),
+        minute: nextDt.getMinutes(),
+        epoch_ms: nextEpoch,
+        needs_confirmation: true
+      };
+      return { ...w, used_percent: 0, remaining_percent: 100, reset: nextReset };
+    });
+    return changed ? { ...snap, windows } : snap;
+  }
   const fingerprint = snap => JSON.stringify(snap.windows.map(w => ({ ...w, reset: { ...w.reset, epoch_ms: null } })));
   function freshness(snap, now = Date.now(), onUsage = false) {
     const age = snap ? now-snap.observed_at_ms : NaN;
     if (!Number.isFinite(age) || age < 0 || age > 86400000) return 'unavailable';
     return age <= 300000 && onUsage ? 'recent' : 'historical';
   }
-  globalThis.GeminiAutoCore = Object.freeze({ permission, usageUrl, chatUrl, minimal, fingerprint, freshness });
+  globalThis.GeminiAutoCore = Object.freeze({ permission, usageUrl, chatUrl, minimal, fingerprint, freshness, applyClockResetIfExpired });
 })();

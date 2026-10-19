@@ -5,8 +5,9 @@ const activeTabs = new Set(); // transient ids only; never serialized
 const navigations = new Map();
 const navigationQueues = new Map();
 const pendingReads = new Map();
-const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0};
+const diagnostic = {last_code:'idle',checks:0,publications:0,rejections:0,last_error:null};
 const CHAT_AUTO_REFRESH_COOLDOWN_MS = 180000;
+const TURN_REFRESH_COOLDOWN_MS = 15000;
 const ALARM_STALE_THRESHOLD_MS = 55000;
 const AUTO_REFRESH_ALARM = 'gemini-web-auto-refresh';
 const POLL_MAX_ATTEMPTS = 20;
@@ -26,6 +27,17 @@ function ensureAlarm() {
 function clearAlarm() {
   try { void chrome.alarms?.clear?.(AUTO_REFRESH_ALARM); } catch {}
 }
+async function recordRefreshError(code, err) {
+  const message = String(err?.message || err || code).slice(0, 160);
+  const entry = { code, message, at_ms: Date.now() };
+  diagnostic.last_code = code;
+  diagnostic.last_error = entry;
+  try {
+    if (await chrome.permissions.contains({ permissions: ['storage'] })) {
+      await chrome.storage.local.set({ lastRefreshError: entry });
+    }
+  } catch {}
+}
 function updateBadge(snapshot) {
   try {
     const current = snapshot?.windows?.find(w => w && w.id === 'current');
@@ -44,6 +56,18 @@ function notifyNativeHost(snapshot) {
     const res = chrome.runtime?.sendNativeMessage?.('com.codenotch.gemini_web', snapshot, () => void chrome.runtime?.lastError);
     if (res && typeof res.catch === 'function') res.catch(() => {});
   } catch {}
+}
+async function syncExpiredSnapshotIfNeeded(rawSnap, nowMs = Date.now()) {
+  if (!rawSnap || !Number.isFinite(rawSnap.observed_at_ms)) return null;
+  const base = core.minimal(rawSnap, rawSnap.observed_at_ms);
+  if (!base) return null;
+  const checked = core.applyClockResetIfExpired(base, nowMs);
+  if (checked !== base) {
+    try { await chrome.storage.local.set({ lastSnapshot: checked }); } catch {}
+    updateBadge(checked);
+    notifyNativeHost(checked);
+  }
+  return checked;
 }
 function extractProfileIdFromUrl(raw) {
   try {
@@ -105,6 +129,51 @@ function usageTargetUrl(raw, tabs = [], storedUrl = null) {
   if (lastProfileId !== null) return `https://gemini.google.com/u/${lastProfileId}/usage?pageId=none`;
   return 'https://gemini.google.com/u/1/usage?pageId=none';
 }
+async function openBackgroundUsageTarget(targetUrl) {
+  let tabErr = null;
+  if (typeof chrome.tabs?.create === 'function') {
+    try {
+      const created = await chrome.tabs.create({ url: targetUrl, active: false });
+      if (created?.id) {
+        return {
+          tabId: created.id,
+          close: async () => { try { await chrome.tabs.remove?.(created.id); } catch {} }
+        };
+      }
+    } catch (err) {
+      tabErr = err;
+    }
+  }
+  if (typeof chrome.windows?.create === 'function') {
+    try {
+      const win = await chrome.windows.create({ url: targetUrl, type: 'popup', state: 'minimized', focused: false });
+      let tabId = win?.tabs?.[0]?.id;
+      if (!tabId && win?.id !== undefined && typeof chrome.tabs?.query === 'function') {
+        const winTabs = await chrome.tabs.query({ windowId: win.id });
+        tabId = winTabs?.[0]?.id;
+      }
+      if (tabId) {
+        return {
+          tabId,
+          close: async () => {
+            try {
+              if (win?.id !== undefined && typeof chrome.windows?.remove === 'function') {
+                await chrome.windows.remove(win.id);
+              } else {
+                await chrome.tabs.remove?.(tabId);
+              }
+            } catch {}
+          }
+        };
+      }
+    } catch (winErr) {
+      await recordRefreshError('window_create_failed', winErr);
+      return null;
+    }
+  }
+  if (tabErr) await recordRefreshError('tab_create_failed', tabErr);
+  return null;
+}
 function finishRead(tabId,result,expected) {
   const pending=pendingReads.get(tabId);
   if (!pending || (expected && pending!==expected)) return;
@@ -127,7 +196,8 @@ async function waitForTabRead(tabId,generation,trigger) {
     else if (pendingReads.get(tabId)===pendingRequest) {
       pendingRequest.timer=setTimeout(()=>finishRead(tabId,{confirmed:false,code:'no_observation'},pendingRequest),14000);
     }
-  } catch {
+  } catch (err) {
+    await recordRefreshError('wait_read_failed', err);
     finishRead(tabId,{confirmed:false,code:'execution_failed'},pendingRequest);
   }
   return completion;
@@ -138,11 +208,12 @@ async function ingestSnapshot(tabId, sourceUrl, rawSnapshot, generation) {
     diagnostic.last_code='invalid_timestamp';
     return {accepted:false,code:'invalid_timestamp'};
   }
-  const snapshot = core.minimal(rawSnapshot,observed);
-  if (!snapshot) {
+  const baseSnapshot = core.minimal(rawSnapshot,observed);
+  if (!baseSnapshot) {
     diagnostic.last_code='invalid_snapshot';
     return {accepted:false,code:'invalid_snapshot'};
   }
+  const snapshot = core.applyClockResetIfExpired(baseSnapshot, Date.now());
   if (generation !== revision) return {accepted:false};
   const stored = await chrome.storage.local.get(['lastSnapshot','lastAccountTier','lastKnownUsageUrl']);
   if (generation !== revision) return {accepted:false};
@@ -179,7 +250,7 @@ async function ingestSnapshot(tabId, sourceUrl, rawSnapshot, generation) {
     lastProfileId = urlPid;
     lastKnownUsageUrl = `https://gemini.google.com/u/${urlPid}/usage?pageId=none`;
   }
-  const toStore = { lastSnapshot: snapshot };
+  const toStore = { lastSnapshot: snapshot, lastRefreshError: null };
   if (lastKnownUsageUrl) toStore.lastKnownUsageUrl = lastKnownUsageUrl;
   if (lastAccountTier) toStore.lastAccountTier = lastAccountTier;
   try {await chrome.storage.local.set(toStore);}
@@ -188,6 +259,7 @@ async function ingestSnapshot(tabId, sourceUrl, rawSnapshot, generation) {
     reportRead(tabId,observed,{confirmed:false,code:'storage_failed'});
     return {accepted:false,code:'storage_failed'};
   }
+  diagnostic.last_error = null;
   updateBadge(snapshot);
   notifyNativeHost(snapshot);
   diagnostic.last_code='persisted';diagnostic.publications++;
@@ -235,7 +307,7 @@ async function pollUsageTab(tabId, generation, ticket = null) {
       const execRes = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [0] },
         world: 'ISOLATED',
-        files: ['extractor.js']
+        files: ['auto-core.js', 'extractor.js']
       });
       let raw = Array.isArray(execRes) ? execRes[0]?.result : null;
       if (!raw || typeof raw !== 'object') {
@@ -263,16 +335,18 @@ async function pollUsageTab(tabId, generation, ticket = null) {
       }
     }
     return true;
-  } catch {
+  } catch (err) {
+    await recordRefreshError('poll_failed', err);
     return false;
   }
 }
 async function recheck() {
   const generation=revision;
   if (!await enabled()) return {requested:false,confirmed:false,code:'not_authorized'};
-  const stored = await chrome.storage.local.get(['lastKnownUsageUrl','lastAccountTier']);
+  const stored = await chrome.storage.local.get(['lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
   if (stored?.lastAccountTier && !lastAccountTier) lastAccountTier = stored.lastAccountTier;
   if (stored?.lastKnownUsageUrl && !lastKnownUsageUrl) lastKnownUsageUrl = stored.lastKnownUsageUrl;
+  if (stored?.lastSnapshot) await syncExpiredSnapshotIfNeeded(stored.lastSnapshot, Date.now());
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
   extractProfileId(tab?.url);
   if (generation!==revision) return {requested:false,confirmed:false,code:'cancelled'};
@@ -292,18 +366,32 @@ async function recheck() {
       return true;
     });
   }
-  if (typeof chrome.tabs.create!=='function') return {requested:false,confirmed:false,code:'blocked_route'};
-  try {
-    const created=await chrome.tabs.create({url:targetUrl,active:false});
-    if (generation!==revision || !created?.id) return {requested:false,confirmed:false,code:'execution_failed'};
-    try {
-      return await waitForTabRead(created.id,generation,()=>pollUsageTab(created.id,generation,null));
-    } finally {
-      try { await chrome.tabs.remove?.(created.id); } catch {}
-    }
-  } catch {
-    return {requested:false,confirmed:false,code:'execution_failed'};
+  if (typeof chrome.tabs?.create!=='function' && typeof chrome.windows?.create!=='function') {
+    return {requested:false,confirmed:false,code:'blocked_route'};
   }
+  const handle = await openBackgroundUsageTarget(targetUrl);
+  if (generation!==revision || !handle?.tabId) return {requested:false,confirmed:false,code:'execution_failed'};
+  try {
+    return await waitForTabRead(handle.tabId,generation,()=>pollUsageTab(handle.tabId,generation,null));
+  } finally {
+    await handle.close();
+  }
+}
+async function ensureDefaultAutoEnabled() {
+  try {
+    if (!await chrome.permissions.contains(core.permission)) return false;
+    const stored = await chrome.storage.local.get(['autoEnabled', 'lastSnapshot']);
+    if (stored.lastSnapshot) await syncExpiredSnapshotIfNeeded(stored.lastSnapshot, Date.now());
+    if (stored.autoEnabled !== false) {
+      if (stored.autoEnabled !== true) {
+        await chrome.storage.local.set({ autoEnabled: true });
+      }
+      listen();
+      ensureAlarm();
+      return true;
+    }
+  } catch {}
+  return false;
 }
 async function enabled() {
   if (!await chrome.permissions.contains(core.permission)) return false;
@@ -336,7 +424,9 @@ async function disable(remove = false, erase = false) {
     if (erase) await chrome.storage.local.clear();
     else await chrome.storage.local.set({autoEnabled:false});
   }
-  if (remove) await chrome.permissions.remove(erase ? core.permission : {permissions:['webNavigation'],origins:core.permission.origins});
+  if (remove) {
+    try { await chrome.permissions.remove(erase ? core.permission : {permissions:['webNavigation'],origins:core.permission.origins}); } catch {}
+  }
 }
 function navigate(details) {
   if (details.frameId !== 0) return;
@@ -355,21 +445,22 @@ async function triggerBackgroundRefresh(sourceUrl, excludeTabId, generation, imm
   const stored = await chrome.storage.local.get(['lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
   if (stored?.lastAccountTier && !lastAccountTier) lastAccountTier = stored.lastAccountTier;
   if (stored?.lastKnownUsageUrl && !lastKnownUsageUrl) lastKnownUsageUrl = stored.lastKnownUsageUrl;
+  if (stored?.lastSnapshot) await syncExpiredSnapshotIfNeeded(stored.lastSnapshot, Date.now());
   const targetUrl = usageTargetUrl(sourceUrl, tabs, stored?.lastKnownUsageUrl);
   const targetPid = extractProfileIdFromUrl(targetUrl);
   const usageTab = tabs.find(t => t?.id && t.id !== excludeTabId && core.usageUrl(t.url) && (!targetPid || extractProfileIdFromUrl(t.url) === targetPid));
   if (usageTab && typeof chrome.tabs.reload === 'function') {
     await chrome.tabs.reload(usageTab.id);
     void delay(POLL_INTERVAL_MS).then(() => pollUsageTab(usageTab.id, generation, null));
-  } else if (!usageTab && typeof chrome.tabs.create === 'function') {
-    const created = await chrome.tabs.create({ url: targetUrl, active: false });
-    if (created?.id) {
-      const p = waitForTabRead(created.id, generation, async () => {
-        if (immediate) return await pollUsageTab(created.id, generation, null);
-        void delay(POLL_INTERVAL_MS).then(() => { if (pendingReads.has(created.id)) void pollUsageTab(created.id, generation, null); });
+  } else if (!usageTab) {
+    const handle = await openBackgroundUsageTarget(targetUrl);
+    if (handle?.tabId) {
+      const p = waitForTabRead(handle.tabId, generation, async () => {
+        if (immediate) return await pollUsageTab(handle.tabId, generation, null);
+        void delay(POLL_INTERVAL_MS).then(() => { if (pendingReads.has(handle.tabId)) void pollUsageTab(handle.tabId, generation, null); });
         return true;
       }).finally(async () => {
-        try { await chrome.tabs.remove?.(created.id); } catch {}
+        await handle.close();
       });
       if (immediate) return await p;
       void p;
@@ -388,6 +479,7 @@ async function performNavigation(details,generation,ticket) {
     if (!core.usageUrl(details.url)) {
       if (core.chatUrl(details.url) && Date.now() - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
         const last = (await chrome.storage.local.get('lastSnapshot')).lastSnapshot;
+        if (last) await syncExpiredSnapshotIfNeeded(last, Date.now());
         const now = Date.now();
         const observedAt = last?.observed_at_ms;
         if (generation === revision && (!Number.isFinite(observedAt) || now - observedAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) && now - lastBgRefreshTriggerAt >= CHAT_AUTO_REFRESH_COOLDOWN_MS) {
@@ -412,15 +504,18 @@ function listen() {
   } catch { /* optional API not yet granted; onAdded retries registration */ }
 }
 listen();
-chrome.runtime?.onInstalled?.addListener(() => ensureAlarm());
-chrome.runtime?.onStartup?.addListener(() => ensureAlarm());
+void ensureDefaultAutoEnabled();
+chrome.runtime?.onInstalled?.addListener(() => { void ensureDefaultAutoEnabled(); ensureAlarm(); });
+chrome.runtime?.onStartup?.addListener(() => { void ensureDefaultAutoEnabled(); ensureAlarm(); });
 chrome.alarms?.onAlarm?.addListener(async alarm => {
   if (alarm?.name !== AUTO_REFRESH_ALARM) return;
   try {
+    await ensureDefaultAutoEnabled();
     if (!await enabled()) return;
     const stored = await chrome.storage.local.get(['lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
     if (stored?.lastAccountTier && !lastAccountTier) lastAccountTier = stored.lastAccountTier;
     if (stored?.lastKnownUsageUrl && !lastKnownUsageUrl) lastKnownUsageUrl = stored.lastKnownUsageUrl;
+    if (stored?.lastSnapshot) await syncExpiredSnapshotIfNeeded(stored.lastSnapshot, Date.now());
     const observedAt = stored?.lastSnapshot?.observed_at_ms;
     if (Number.isFinite(observedAt) && Date.now() - observedAt <= ALARM_STALE_THRESHOLD_MS) return;
     const tabs = await queryGeminiTabs();
@@ -431,7 +526,9 @@ chrome.alarms?.onAlarm?.addListener(async alarm => {
     }
     lastBgRefreshTriggerAt = Date.now();
     await triggerBackgroundRefresh(tabs[0]?.url || null, null, revision, true);
-  } catch {}
+  } catch (err) {
+    await recordRefreshError('alarm_failed', err);
+  }
 });
 chrome.permissions.onAdded.addListener(() => { listen(); ensureAlarm(); });
 chrome.permissions.onRemoved.addListener(() => { void disable().catch(() => {}); });
@@ -476,6 +573,38 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
     })().then(reply,()=>reply({worker:{last_code:'diagnostic_unavailable'}}));
     return true;
   }
+  if (!popup && (type === 'GEMINI_APP_ACTIVE' || type === 'GEMINI_TURN_COMPLETED')) {
+    const candidateUrl = message?.url || sender.url;
+    if (!core.chatUrl(candidateUrl)) {
+      reply({ enabled: false, accepted: false, code: 'blocked_route' });
+      return false;
+    }
+    void (async () => {
+      extractProfileId(candidateUrl);
+      await ensureDefaultAutoEnabled();
+      if (!await enabled()) return { enabled: false, accepted: false };
+      ensureAlarm();
+      const stored = await chrome.storage.local.get(['lastSnapshot']);
+      if (stored?.lastSnapshot) await syncExpiredSnapshotIfNeeded(stored.lastSnapshot, Date.now());
+      const now = Date.now();
+      if (type === 'GEMINI_TURN_COMPLETED') {
+        if (now - lastBgRefreshTriggerAt >= TURN_REFRESH_COOLDOWN_MS) {
+          lastBgRefreshTriggerAt = now;
+          await triggerBackgroundRefresh(candidateUrl, sender.tab?.id, revision, true);
+          return { enabled: true, accepted: true, triggered: true };
+        }
+        return { enabled: true, accepted: true, triggered: false, code: 'cooldown' };
+      }
+      const observedAt = stored?.lastSnapshot?.observed_at_ms;
+      if ((!Number.isFinite(observedAt) || now - observedAt > ALARM_STALE_THRESHOLD_MS) && now - lastBgRefreshTriggerAt >= TURN_REFRESH_COOLDOWN_MS) {
+        lastBgRefreshTriggerAt = now;
+        void triggerBackgroundRefresh(candidateUrl, sender.tab?.id, revision, false);
+        return { enabled: true, accepted: true, triggered: true };
+      }
+      return { enabled: true, accepted: true, triggered: false };
+    })().then(reply, () => reply({ enabled: false, accepted: false }));
+    return true;
+  }
   void locked(async () => {
     if (popup) {
       if (type === 'AUTO_ENABLE') {
@@ -492,18 +621,17 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
           const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
           return {enabled:false,snapshot:null,freshness:'unavailable',lastKnownUsageUrl:usageTargetUrl(tab?.url,[])};
         }
-        const data = await chrome.storage.local.get(['autoEnabled','lastSnapshot','lastKnownUsageUrl','lastAccountTier']);
+        const data = await chrome.storage.local.get(['autoEnabled','lastSnapshot','lastKnownUsageUrl','lastAccountTier','lastRefreshError']);
         if (data.lastAccountTier && !lastAccountTier) lastAccountTier = data.lastAccountTier;
         if (data.lastKnownUsageUrl && !lastKnownUsageUrl) lastKnownUsageUrl = data.lastKnownUsageUrl;
-        const cachedTime=data.lastSnapshot?.observed_at_ms;
-        const snapshot = Number.isFinite(cachedTime)?core.minimal(data.lastSnapshot,cachedTime):null;
+        const snapshot = data.lastSnapshot ? await syncExpiredSnapshotIfNeeded(data.lastSnapshot, Date.now()) : null;
         const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
         extractProfileId(tab?.url);
         const auto = await enabled();
         const freshness = core.freshness(snapshot,Date.now(),auto && core.usageUrl(tab?.url));
         if (freshness === 'unavailable') { await chrome.storage.local.remove('lastSnapshot'); updateBadge(null); }
-        else if (snapshot) { notifyNativeHost(snapshot); }
-        return {enabled:auto,snapshot:freshness==='unavailable'?null:snapshot,freshness,lastKnownUsageUrl:usageTargetUrl(tab?.url,[],data.lastKnownUsageUrl)};
+        else if (snapshot) { updateBadge(snapshot); notifyNativeHost(snapshot); }
+        return {enabled:auto,snapshot:freshness==='unavailable'?null:snapshot,freshness,lastKnownUsageUrl:usageTargetUrl(tab?.url,[],data.lastKnownUsageUrl),lastRefreshError:data.lastRefreshError||null};
       }
       return {};
     }

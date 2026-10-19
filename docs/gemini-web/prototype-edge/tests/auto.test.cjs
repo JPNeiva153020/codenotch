@@ -110,12 +110,15 @@ test('desativação invalida snapshot já enfileirado antes de gravar',async()=>
 test('desativado conserva acesso apenas ao último histórico até apagar',async()=>{
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
-test('configuração mínima: opcionais e shim exclusivo para /usage em document_start no mundo MAIN',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.2.2');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);
-  assert.deepEqual(m.content_scripts,[{matches:['https://gemini.google.com/usage*','https://gemini.google.com/u/*/usage*'],js:['visibility-shim.js'],run_at:'document_start',world:'MAIN'}]);
+test('configuração v0.3.0: permissões obrigatórias, host_permissions e content_scripts (MAIN shim em /usage e chat-trigger em /app)',()=>{
+  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.3.0');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms','storage','webNavigation','tabs']);assert.equal(m.optional_permissions,undefined);assert.deepEqual(m.host_permissions,['https://gemini.google.com/*']);assert.equal(m.optional_host_permissions,undefined);
+  assert.deepEqual(m.content_scripts,[
+    {matches:['https://gemini.google.com/usage*','https://gemini.google.com/u/*/usage*'],js:['visibility-shim.js'],run_at:'document_start',world:'MAIN'},
+    {matches:['https://gemini.google.com/app*','https://gemini.google.com/u/*/app*'],js:['chat-trigger.js'],run_at:'document_idle'}
+  ]);
 });
 test('novos scripts sem rede, cookies, tokens, código remoto ou logs',()=>{
-  for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js','visibility-shim.js']){
+  for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js','visibility-shim.js','chat-trigger.js']){
     const text=code(file);new vm.Script(text);assert.doesNotMatch(text,/\b(fetch|XMLHttpRequest|WebSocket|sendBeacon|eval)\s*\(|document\.cookie|localStorage|sessionStorage|console\.|new\s+Function\b/);
   }
 });
@@ -493,6 +496,83 @@ test('visibility-shim.js força document.hidden=false, visibilityState="visible"
   await new Promise(r=>setTimeout(r,20));
   assert.equal(rafCalledWith,4242);
 });
+
+test('applyClockResetIfExpired zera used_percent (100% -> 0%), recalcula remaining_percent=100 e avança reset.epoch_ms em +5h quando horário de reset já passou',async()=>{
+  const c=policy().GeminiAutoCore;
+  const observedAt=new Date(2026,9,19,15,4,10,9).getTime(); // 15:04
+  const resetAt1711=new Date(2026,9,19,17,11,0,0).getTime(); // 17:11
+  const nowAt1920=new Date(2026,9,19,19,20,0,0).getTime(); // 19:20
+  const raw=sample();
+  raw.observed_at_ms=observedAt;
+  raw.windows[0].used_percent=100;
+  raw.windows[0].reset={day:null,month:null,year:null,timezone:null,epoch_ms:resetAt1711,hour:17,minute:11};
+  const snap=c.minimal(raw,observedAt);
+  assert.equal(snap.windows[0].used_percent,100);
+  const afterReset=c.applyClockResetIfExpired(snap,nowAt1920);
+  assert.equal(afterReset.windows[0].used_percent,0);
+  assert.equal(afterReset.windows[0].remaining_percent,100);
+  assert.equal(afterReset.windows[0].reset.epoch_ms,resetAt1711+5*3600*1000);
+  assert.equal(afterReset.windows[0].reset.hour,22);
+  assert.equal(afterReset.windows[0].reset.minute,11);
+  assert.equal(afterReset.windows[0].reset.needs_confirmation,true);
+});
+
+test('fallback windows.create minimizado em modo PWA quando tabs.create falha sem janela normal do Edge aberta',async()=>{
+  const w=worker({autoEnabled:true,lastKnownUsageUrl:'https://gemini.google.com/u/1/usage?pageId=none',lastAccountTier:'pro'});
+  w.grant();
+  w.tab.url='https://gemini.google.com/u/1/app';
+  const windowsCreated=[],windowsRemoved=[];
+  w.chrome.tabs.create=async()=>{throw new Error('No current window');};
+  w.chrome.windows={
+    create:async opts=>{
+      const win={id:777,...opts,tabs:[{id:88,url:opts.url,active:false}]};
+      windowsCreated.push(win);
+      w.otherTabs.push(win.tabs[0]);
+      return win;
+    },
+    remove:async id=>{windowsRemoved.push(id);}
+  };
+  w.chrome.scripting.executeScript=async opts=>{
+    w.injections.push(opts);
+    if(opts.world==='MAIN') return [{}];
+    const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=19;snap.windows[1].used_percent=75;
+    snap.is_pro_tier=true;snap.account_tier='pro';snap.profile_index='1';
+    return [{result:snap}];
+  };
+  const res=await w.message({type:'AUTO_RECHECK'});
+  assert.equal(res.confirmed,true);
+  assert.equal(windowsCreated.length,1);
+  assert.equal(windowsCreated[0].type,'popup');
+  assert.equal(windowsCreated[0].state,'minimized');
+  assert.equal(windowsCreated[0].focused,false);
+  assert.equal(windowsCreated[0].url,'https://gemini.google.com/u/1/usage?pageId=none');
+  assert.deepEqual(windowsRemoved,[777]);
+  assert.equal(w.badge.text,'19%');
+});
+
+test('chat-trigger.js e GEMINI_TURN_COMPLETED ativam autoEnabled por padrão e disparam atualização em 2º plano após envio de prompt no PWA',async()=>{
+  const w=worker({lastKnownUsageUrl:'https://gemini.google.com/u/1/usage?pageId=none',lastAccountTier:'pro'});
+  w.grant();
+  w.chrome.scripting.executeScript=async opts=>{
+    w.injections.push(opts);
+    if(opts.world==='MAIN') return [{}];
+    const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=22;snap.windows[1].used_percent=75;
+    snap.is_pro_tier=true;snap.account_tier='pro';snap.profile_index='1';
+    return [{result:snap}];
+  };
+  const sender={id:'test-extension',url:'https://gemini.google.com/u/1/app/abc',tab:{id:5}};
+  const res=await w.message({type:'GEMINI_TURN_COMPLETED',url:'https://gemini.google.com/u/1/app/abc'},sender);
+  assert.equal(res.enabled,true);
+  assert.equal(res.accepted,true);
+  assert.equal(res.triggered,true);
+  assert.equal(w.data.autoEnabled,true);
+  assert.equal(w.created.length,1);
+  assert.equal(w.created[0].url,'https://gemini.google.com/u/1/usage?pageId=none');
+  assert.equal(w.badge.text,'22%');
+  assert.equal(w.nativeMessages.length,1);
+  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,22);
+});
+
 
 
 

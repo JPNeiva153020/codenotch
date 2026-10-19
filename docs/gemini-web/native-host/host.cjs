@@ -76,7 +76,9 @@ function validateSnapshot(raw) {
       w.reset.epoch_ms = computeResetEpochMs(w.reset, min.observed_at_ms);
     }
   }
-  return min;
+  return typeof core.applyClockResetIfExpired === 'function'
+    ? core.applyClockResetIfExpired(min, Date.now())
+    : min;
 }
 
 function readBytes(fd, length) {

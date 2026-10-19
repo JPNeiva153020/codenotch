@@ -64,14 +64,27 @@ pub fn parse_state_json(raw: &str, now: u64) -> Option<UsageSnapshot> {
         if !pct.is_finite() || !(0.0..=100.0).contains(&pct) {
             return None;
         }
-        let resets_at = item
+        let mut resets_at = item
             .get("reset")
             .and_then(|r| r.get("epoch_ms"))
             .and_then(|e| e.as_u64());
+        let mut used = (pct / 100.0).clamp(0.0, 1.0);
+        if let Some(reset_epoch_ms) = resets_at {
+            if observed_at_ms < reset_epoch_ms && now >= reset_epoch_ms {
+                used = 0.0;
+                let cycle_ms: u64 = if expected_id == "weekly" {
+                    7 * 86_400 * 1_000
+                } else {
+                    5 * 3_600 * 1_000
+                };
+                let steps = ((now - reset_epoch_ms) / cycle_ms) + 1;
+                resets_at = Some(reset_epoch_ms.saturating_add(steps.saturating_mul(cycle_ms)));
+            }
+        }
         windows.push(LimitWindow {
             id: expected_id.to_string(),
             label: label.to_string(),
-            used: (pct / 100.0).clamp(0.0, 1.0),
+            used,
             resets_at,
             ..Default::default()
         });
@@ -281,4 +294,64 @@ mod tests {
         assert_eq!(snap.status, "stale");
         assert_eq!(snap.windows.len(), 2);
     }
+
+    #[test]
+    fn expired_reset_window_resets_used_percent_to_zero_and_advances_cycle() {
+        let json_with_epoch = r#"{
+            "schema_version": 1,
+            "provider": "gemini_web",
+            "origin": "visible_ui",
+            "collection": "dom_on_authorized_usage",
+            "model": null,
+            "status": "observed",
+            "observed_at_ms": 1792433050009,
+            "windows": [
+                {
+                    "id": "current",
+                    "status": "observed",
+                    "used_percent": 100,
+                    "remaining_percent": 0,
+                    "reset": {
+                        "day": null,
+                        "month": null,
+                        "year": null,
+                        "hour": 17,
+                        "minute": 11,
+                        "timezone": null,
+                        "epoch_ms": 1792440660000,
+                        "needs_confirmation": true
+                    },
+                    "issues": []
+                },
+                {
+                    "id": "weekly",
+                    "status": "observed",
+                    "used_percent": 75,
+                    "remaining_percent": 25,
+                    "reset": {
+                        "day": 21,
+                        "month": 10,
+                        "year": null,
+                        "hour": 9,
+                        "minute": 53,
+                        "timezone": null,
+                        "epoch_ms": 1792587180000,
+                        "needs_confirmation": true
+                    },
+                    "issues": []
+                }
+            ],
+            "issues": []
+        }"#;
+        let now_after_reset = 1_792_448_400_000; // 19:20 (após 17:11)
+        let snap = parse_state_json(json_with_epoch, now_after_reset)
+            .expect("snapshot after reset time should parse and reset current window");
+        assert!((snap.windows[0].used - 0.0).abs() < 1e-6);
+        assert_eq!(
+            snap.windows[0].resets_at,
+            Some(1_792_440_660_000 + CURRENT_CYCLE_MS)
+        );
+        assert!((snap.windows[1].used - 0.75).abs() < 1e-6);
+    }
 }
+

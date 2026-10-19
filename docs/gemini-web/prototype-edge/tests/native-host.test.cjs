@@ -158,3 +158,30 @@ test('wrapper host.cmd encaminha frame válido para host.cjs no Windows', () => 
   }
 });
 
+test('host nativo zera automaticamente janela cujo horário de reset já passou (observed_at_ms < reset.epoch_ms <= now)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codenotch-gemini-reset-'));
+  const stateFile = path.join(tmpDir, 'gemini-web-state.json');
+  try {
+    const now = Date.now();
+    const observedAt = now - 3 * 3600 * 1000; // 3h atrás
+    const pastResetEpoch = now - 3600 * 1000; // 1h atrás (já venceu!)
+    const snap = validSnapshot();
+    snap.observed_at_ms = observedAt;
+    snap.windows[0].used_percent = 100;
+    snap.windows[0].remaining_percent = 0;
+    snap.windows[0].reset.epoch_ms = pastResetEpoch;
+    const res = spawnSync(process.execPath, [hostPath], {
+      input: encodeFrame(snap),
+      env: { ...process.env, CODENOTCH_GEMINI_WEB_STATE: stateFile },
+    });
+    assert.equal(res.status, 0);
+    assert.deepEqual(decodeFrame(res.stdout), { ok: true });
+    const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(saved.windows[0].used_percent, 0);
+    assert.equal(saved.windows[0].remaining_percent, 100);
+    assert.equal(saved.windows[0].reset.epoch_ms, pastResetEpoch + 5 * 3600 * 1000);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
