@@ -45,20 +45,20 @@ test('resposta histórica atrasada não restaura resultado depois de apagar',asy
   vm.runInContext(source('auto-popup.js'),ctx);await els['auto-erase'].click();resolveState({enabled:true,freshness:'historical',snapshot:snapshot()});await new Promise(r=>setImmediate(r));assert.equal(els['auto-result'].textContent,'');assert.match(els['auto-status'].textContent,/Dados apagados/u);
 });
 
-async function openUsageClick(url){
+async function openUsageClick(url, rememberedUrl=null){
   let injected=0;const created=[];
   const els=Object.fromEntries(['read','clear','open-usage','result','status'].map(id=>[id,{textContent:'',addEventListener(_,fn){this.click=fn;}}]));
-  const ctx=vm.createContext({URL,Date,Intl,document:{getElementById:id=>els[id]},chrome:{tabs:{query:async()=>url===undefined?[]:[{id:1,url}],create:async opts=>{created.push(opts.url);}},scripting:{executeScript:async()=>{injected++;}}}});
+  const ctx=vm.createContext({URL,Date,Intl,document:{getElementById:id=>els[id]},chrome:{tabs:{query:async()=>url===undefined?[]:[{id:1,url}],create:async opts=>{created.push(opts.url);}},runtime:{sendMessage:async msg=>msg?.type==='AUTO_STATE'?{lastKnownUsageUrl:rememberedUrl}:{}},scripting:{executeScript:async()=>{injected++;}}}});
   vm.runInContext(source('popup.js'),ctx);await els['open-usage'].click();return {created,injected};
 }
-test('atalho #open-usage em conversa /u/2/app abre https://gemini.google.com/u/2/usage sem injeção',async()=>{
+test('atalho #open-usage em conversa /u/2/app abre https://gemini.google.com/u/2/usage?pageId=none sem injeção',async()=>{
   const r=await openUsageClick('https://gemini.google.com/u/2/app');
-  assert.deepEqual(r.created,['https://gemini.google.com/u/2/usage']);assert.equal(r.injected,0);
+  assert.deepEqual(r.created,['https://gemini.google.com/u/2/usage?pageId=none']);assert.equal(r.injected,0);
 });
-test('atalho #open-usage fora de /u/<digitos>/ ou em URL inválida usa fallback fixo sem open redirect',async()=>{
-  for(const url of ['https://gemini.google.com/app','https://gemini.google.com/u/abc/app','https://user:pass@gemini.google.com/u/2/app','https://gemini.google.com.evil.invalid/u/2/app','http://gemini.google.com/u/2/app','javascript:alert(1)',undefined]){
+test('atalho #open-usage fora de /u/<digitos>/, em /u/0/ ou em URL inválida prioriza /u/1/usage?pageId=none sem open redirect',async()=>{
+  for(const url of ['https://gemini.google.com/app','https://gemini.google.com/u/0/app','https://gemini.google.com/u/abc/app','https://user:pass@gemini.google.com/u/2/app','https://gemini.google.com.evil.invalid/u/2/app','http://gemini.google.com/u/2/app','javascript:alert(1)',undefined]){
     const r=await openUsageClick(url);
-    assert.deepEqual(r.created,['https://gemini.google.com/usage']);assert.equal(r.injected,0);
+    assert.deepEqual(r.created,['https://gemini.google.com/u/1/usage?pageId=none']);assert.equal(r.injected,0);
   }
 });
 test('popup.html inclui atalho #open-usage, botão #auto-recheck em 2º plano e mantém #auto-diagnostics hidden por padrão',()=>{

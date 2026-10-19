@@ -17,7 +17,7 @@
       const style = getComputedStyle(node);
       if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) return false;
     }
-    return el.getClientRects().length > 0;
+    return true;
   }
   function entries(root) {
     // No body.innerText, ancestor.textContent, attributes, inputs or HTML dumps.
@@ -54,6 +54,7 @@
   }
   const isPercentage = text => /^Quantidade usada\s*:/u.test(text);
   const isReset = text => /^\d/u.test(text) && /o limite de uso é redefinido[.]?$/iu.test(text);
+  const isLimitsTitle = text => text === 'Limites de uso' || /^Limites de uso\s+(?:PRO|Ultra|Advanced)$/iu.test(text);
   function resetParts(text) {
     const match = text.match(/^(?:(\d{1,2}) de ([a-zç]+)\s*\.?\s*,?\s*)?(\d{1,2})\s*:\s*(\d{2})\s*:\s*o limite de uso é redefinido\.?$/iu);
     if (!match) return null;
@@ -100,9 +101,13 @@
     return result;
   }
   function extract(doc = document, now = Date.now()) {
-    const base = { schema_version: 1, provider: 'gemini_web', model: null, scope: 'Gemini Web — escopo do modelo não confirmado', origin: 'visible_ui', collection: 'dom_on_user_action', observed_at_ms: now, browser_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, status: 'unavailable', plan: null, freshness_label: null, windows: [], issues: [] };
+    const pathname = String(doc?.location?.pathname ?? globalThis.location?.pathname ?? '');
+    const profileMatch = pathname.match(/^\/u\/(\d+)\/usage\/?$/u);
+    const profileIndex = profileMatch ? profileMatch[1] : null;
+    const profilePath = pathname || null;
+    const base = { schema_version: 1, provider: 'gemini_web', model: null, scope: 'Gemini Web — escopo do modelo não confirmado', origin: 'visible_ui', collection: 'dom_on_user_action', observed_at_ms: now, browser_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, status: 'unavailable', plan: null, is_pro_tier: false, account_tier: 'unknown', profile_index: profileIndex, profile_path: profilePath, freshness_label: null, windows: [], issues: [] };
     if (!Number.isFinite(now) || now < 0) return { ...base, observed_at_ms: null, issues: ['invalid_observation_time'] };
-    const titles = [...doc.querySelectorAll('main h1,main h2,[role="main"] h1,[role="main"] h2')].filter(el => visible(el) && ownText(el) === 'Limites de uso');
+    const titles = [...doc.querySelectorAll('main h1,main h2,main [role="heading"],[role="main"] h1,[role="main"] h2,[role="main"] [role="heading"]')].filter(el => visible(el) && isLimitsTitle(ownText(el)));
     if (titles.length !== 1) return { ...base, issues: [titles.length ? 'duplicate_title' : 'limits_page_not_recognized'] };
     const main = titles[0].closest('main,[role="main"]');
     if (main.querySelector('[role="log"],[data-message-id],[contenteditable="true"],user-query,model-response,message-content')) return { ...base, issues: ['conversation_surface_detected'] };
@@ -114,17 +119,21 @@
       if (scope === main) break;
       scope = scope.parentElement;
     }
+    const isFreeUpgradeBanner = fields.some(x => /Aumente o limite de uso|Fazer upgrade/iu.test(x.text));
+    const plans = fields.filter(x => /^(?:PRO|Ultra|Advanced)$/iu.test(x.text) || /^Limites de uso\s+(?:PRO|Ultra|Advanced)$/iu.test(x.text));
+    const isPro = plans.length === 1 && !isFreeUpgradeBanner;
+    base.plan = isPro ? (plans[0].text.match(/PRO|Ultra|Advanced/iu)?.[0]?.toUpperCase() || 'PRO') : null;
+    base.is_pro_tier = isPro;
+    base.account_tier = isPro ? 'pro' : (isFreeUpgradeBanner ? 'free' : 'unknown');
     if (!fields.some(x => x.text === 'Uso atual' || x.text === 'Limite semanal')) return { ...base, issues: ['missing_quota_labels'] };
     const labels = fields.filter(x => ['Uso atual','Limite semanal'].includes(x.text));
-    const plans = fields.filter(x => x.text === 'PRO');
-    base.plan = plans.length === 1 ? 'PRO' : null;
     base.freshness_label = fields.some(x => x.text === 'Atualizado agora') ? 'Atualizado agora' : null;
     base.windows = [readWindow(labels.filter(x => x.text === 'Uso atual'), 'current', scope, labels), readWindow(labels.filter(x => x.text === 'Limite semanal'), 'weekly', scope, labels)];
     base.status = base.windows.every(w => w.status === 'observed') ? 'observed' : base.windows.some(w => w.used_percent !== null) ? 'partial' : 'unavailable';
     return base;
   }
   function getContainer(doc = document) {
-    const titles = [...doc.querySelectorAll('main h1,main h2,[role="main"] h1,[role="main"] h2')].filter(el => visible(el) && ownText(el) === 'Limites de uso');
+    const titles = [...doc.querySelectorAll('main h1,main h2,main [role="heading"],[role="main"] h1,[role="main"] h2,[role="main"] [role="heading"]')].filter(el => visible(el) && isLimitsTitle(ownText(el)));
     if (titles.length !== 1) return null;
     const main = titles[0].closest('main,[role="main"]');
     if (main.querySelector('[role="log"],[data-message-id],[contenteditable="true"],user-query,model-response,message-content')) return null;

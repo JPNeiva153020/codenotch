@@ -13,9 +13,12 @@ function controller(options={}) {
   const api=ctx.GeminiAutoController.create({allowed:()=>allowed,authorized:async()=>authorization,read:()=>{reads++;return raw;},validate:ctx.GeminiAutoCore.minimal,key:ctx.GeminiAutoCore.fingerprint,publish:async()=>{publications++;return true;},root:()=>stableRoot,observe:(_,changed)=>{mutated=changed;return {disconnect(){disconnected++;}};},later:(fn,delay)=>{const id=++seq;queue.set(id,{fn,delay});return id;},clear:id=>queue.delete(id),...options});
   return {api,queue,get reads(){return reads;},get publications(){return publications;},get disconnected(){return disconnected;},async tick(){const next=queue.entries().next().value;if(next){queue.delete(next[0]);next[1].fn();await flush();}},mutate(){mutated?.();},route(value){allowed=value;},consent(value){authorization=value;},data(value){raw=value;}};
 }
-test('política aceita somente HTTPS e rota ancorada de limites',()=>{
+test('política aceita somente HTTPS e rota ancorada de limites (incluindo /usage e ?pageId=none)',()=>{
   const c=policy().GeminiAutoCore;
   assert.equal(c.usageUrl('https://gemini.google.com/u/0/usage'),true);
+  assert.equal(c.usageUrl('https://gemini.google.com/u/1/usage?pageId=none'),true);
+  assert.equal(c.usageUrl('https://gemini.google.com/usage'),true);
+  assert.equal(c.usageUrl('https://gemini.google.com/usage?pageId=none'),true);
   for(const url of ['https://gemini.google.com/app','https://gemini.google.com/u/0/usage/chat','https://gemini.google.com/u/abc/usage','http://gemini.google.com/u/0/usage','https://gemini.google.com.evil.invalid/u/0/usage','https://user:pass@gemini.google.com/u/0/usage'])assert.equal(c.usageUrl(url),false);
 });
 test('snapshot mínimo exclui conta, perfil, URL, notas e dados arbitrários e calcula epoch_ms local',()=>{
@@ -74,7 +77,7 @@ function event(){const list=[];return {addListener(fn,filter){list.push({fn,filt
 function worker(data={}) {
   let granted=false,storageGranted=false;const injections=[],sent=[],reloaded=[],created=[],removed=[],otherTabs=[],nativeMessages=[];const badge={text:null,color:null};const events={added:event(),removed:event(),complete:event(),spa:event(),messages:event()};
   const tab={id:1,url:'https://gemini.google.com/u/0/usage'};
-  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},remove:async id=>{removed.push(id);const i=otherTabs.findIndex(t=>t.id===id);if(i>=0)otherTabs.splice(i,1);},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages,sendNativeMessage:(host,payload,cb)=>{nativeMessages.push({host,payload});if(typeof cb==='function')cb({ok:true});}}};
+  const chrome={action:{setBadgeText:async({text})=>{badge.text=text;},setBadgeBackgroundColor:async({color})=>{badge.color=color;}},permissions:{contains:async p=>(!p.permissions?.includes('storage')||storageGranted)&&(!p.permissions?.includes('webNavigation')&&!p.origins?.length||granted),remove:async p=>{granted=false;if(p.permissions?.includes('storage'))storageGranted=false;return true;},onAdded:events.added,onRemoved:events.removed},storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]])),set:async x=>Object.assign(data,x),remove:async k=>{delete data[k];},clear:async()=>{for(const k of Object.keys(data))delete data[k];},setAccessLevel:async()=>{}}},tabs:{get:async id=>{const found=[tab,...otherTabs].find(t=>t.id===id);return {...(found||tab)};},query:async q=>q?.active?[{...tab}]:[{...tab},...otherTabs],reload:async id=>{reloaded.push(id);},create:async opts=>{const t={id:99,...opts};created.push(t);otherTabs.push(t);return t;},remove:async id=>{removed.push(id);const i=otherTabs.findIndex(t=>t.id===id);if(i>=0)otherTabs.splice(i,1);},sendMessage:async(id,m)=>sent.push(m),onRemoved:event(),onUpdated:event(),onActivated:event()},scripting:{executeScript:async x=>injections.push(x)},webNavigation:{onCompleted:events.complete,onHistoryStateUpdated:events.spa},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:events.messages,sendNativeMessage:(host,payload,cb)=>{nativeMessages.push({host,payload});if(typeof cb==='function')cb({ok:true});}}};
   const ctx=vm.createContext({URL,Date,chrome,Set,Promise,setTimeout:fn=>setTimeout(fn,20),clearTimeout});ctx.importScripts=filename=>vm.runInContext(code(filename),ctx);vm.runInContext(code('auto-worker.js'),ctx);
   const popup={id:chrome.runtime.id,url:chrome.runtime.getURL('popup.html')};
   const message=(m,sender=popup)=>new Promise(resolve=>{const accepted=events.messages.list[0].fn(m,sender,resolve);if(!accepted)resolve(null);});
@@ -108,7 +111,7 @@ test('desativado conserva acesso apenas ao último histórico até apagar',async
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
 test('configuração mínima: opcionais sem content scripts permanentes',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.1.0');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
+  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.2.1');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms']);assert.deepEqual(m.optional_permissions,['storage','webNavigation']);assert.equal(m.host_permissions,undefined);assert.equal(m.content_scripts,undefined);
 });
 test('novos scripts sem rede, cookies, tokens, código remoto ou logs',()=>{
   for(const file of ['auto-core.js','auto-controller.js','auto-content.js','auto-worker.js','auto-popup.js']){
@@ -147,16 +150,17 @@ test('navegações concorrentes descartam tentativa anterior da mesma aba',async
   assert.equal(w.injections.length,1);
 });
 
-test('reverificar por gesto não pede nem muda permissões e fora de /usage cria e fecha aba temporária em 2º plano sem injetar no chat',async()=>{
+test('reverificar por gesto não pede nem muda permissões e fora de /usage cria, faz polling e fecha aba temporária em 2º plano sem injetar no chat',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   assert.equal((await w.message({type:'AUTO_RECHECK'})).requested,true);
   assert.equal(w.injections.length,1);assert.equal(w.granted,true);
   w.tab.url='https://gemini.google.com/u/2/app';
   const r=await w.message({type:'AUTO_RECHECK'});
   assert.equal(r.requested,true);
-  assert.equal(w.injections.length,1);
+  assert.equal(w.injections.length,2);
+  assert.equal(w.injections[1].target.tabId,99);
   assert.equal(w.created.length,1);
-  assert.equal(w.created[0].url,'https://gemini.google.com/u/2/usage');
+  assert.equal(w.created[0].url,'https://gemini.google.com/u/2/usage?pageId=none');
   assert.equal(w.created[0].active,false);
   assert.deepEqual(w.removed,[99]);
 });
@@ -242,15 +246,15 @@ test('chatUrl reconhece rotas /app e /u/<id>/app e rejeita /usage, credenciais o
   }
 });
 
-test('navegação em /u/1/app (PWA) cria aba temporária /u/1/usage se ausente, fecha após snapshot e lembra perfil /u/1/',async()=>{
+test('navegação em /u/1/app (PWA) cria aba temporária /u/1/usage?pageId=none se ausente, fecha após snapshot e lembra perfil /u/1/',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   w.tab.url='https://gemini.google.com/u/1/app/chat-pwa';
   await w.events.spa.list[0].fn({frameId:0,tabId:1,url:w.tab.url});
   assert.equal(w.created.length,1);
-  assert.equal(w.created[0].url,'https://gemini.google.com/u/1/usage');
+  assert.equal(w.created[0].url,'https://gemini.google.com/u/1/usage?pageId=none');
   assert.equal(w.created[0].active,false);
   const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=33;
-  await w.message({type:'AUTO_SNAPSHOT',snapshot:snap},{id:'test-extension',url:'https://gemini.google.com/u/1/usage',tab:{id:99}});
+  await w.message({type:'AUTO_SNAPSHOT',snapshot:snap},{id:'test-extension',url:'https://gemini.google.com/u/1/usage?pageId=none',tab:{id:99}});
   await flush();await flush();
   assert.deepEqual(w.removed,[99]);
   assert.equal(w.badge.text,'33%');
@@ -259,14 +263,14 @@ test('navegação em /u/1/app (PWA) cria aba temporária /u/1/usage se ausente, 
   await w.events.spa.list[0].fn({frameId:0,tabId:1,url:'https://gemini.google.com/u/1/app/chat-pwa-2'});
   assert.equal(w.created.length,1);
 
-  // Mesmo quando a aba ativa não traz /u/1/ na URL, usageTargetUrl lembra lastProfileId = '1'
+  // Mesmo quando a aba ativa não traz /u/1/ na URL, usageTargetUrl lembra lastKnownUsageUrl = '/u/1/usage?pageId=none'
   w.tab.url='https://gemini.google.com/app';
   const recheckPromise=w.message({type:'AUTO_RECHECK'});
   await flush();
   assert.equal(w.created.length,2);
-  assert.equal(w.created[1].url,'https://gemini.google.com/u/1/usage');
+  assert.equal(w.created[1].url,'https://gemini.google.com/u/1/usage?pageId=none');
   const snap2=sample();snap2.observed_at_ms=Date.now()+1000;snap2.windows[0].used_percent=40;
-  await w.message({type:'AUTO_SNAPSHOT',snapshot:snap2},{id:'test-extension',url:'https://gemini.google.com/u/1/usage',tab:{id:99}});
+  await w.message({type:'AUTO_SNAPSHOT',snapshot:snap2},{id:'test-extension',url:'https://gemini.google.com/u/1/usage?pageId=none',tab:{id:99}});
   const recheckRes=await recheckPromise;
   assert.equal(recheckRes.confirmed,true);
   assert.deepEqual(w.removed,[99,99]);
@@ -321,6 +325,115 @@ test('AUTO_SNAPSHOT e AUTO_STATE notificam host nativo com.codenotch.gemini_web 
   assert.equal(w.data.lastSnapshot.windows[0].used_percent,52);
   assert.equal(w.badge.text,'52%');
 });
+
+test('transição SPA via tabs.onUpdated sem status complete dispara captura em /u/1/usage?pageId=none',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/u/1/usage?pageId=none';
+  w.chrome.tabs.onUpdated.list[0].fn(1,{url:'https://gemini.google.com/u/1/usage?pageId=none'},{id:1,url:'https://gemini.google.com/u/1/usage?pageId=none'});
+  await flush();await flush();
+  assert.equal(w.injections.length,1);
+  assert.equal(w.data.lastKnownUsageUrl,'https://gemini.google.com/u/1/usage?pageId=none');
+});
+
+test('polling ativo pelo worker em aba oculta extrai após hidratação tardia do Angular e fecha a aba',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/u/1/app';
+  let attemptCount=0;
+  w.chrome.scripting.executeScript=async opts=>{
+    w.injections.push(opts);
+    attemptCount++;
+    if(attemptCount<3) return [{result:{status:'unavailable',windows:[]}}];
+    const snap=sample();snap.observed_at_ms=Date.now();snap.windows[0].used_percent=29;snap.windows[1].used_percent=12;
+    snap.is_pro_tier=true;snap.account_tier='pro';snap.profile_index='1';
+    return [{result:snap}];
+  };
+  const res=await w.message({type:'AUTO_RECHECK'});
+  assert.equal(res.confirmed,true);
+  assert.equal(res.code,'updated');
+  assert.equal(w.badge.text,'29%');
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,29);
+  assert.equal(w.nativeMessages.length,1);
+  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,29);
+  assert.deepEqual(w.removed,[99]);
+});
+
+test('proteção de conta PRO (/u/1/usage) bloqueia sobrescrita por conta Free (/u/0/usage ou /usage com 0%)',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/u/1/usage?pageId=none';
+  const proSnap={...sample(),observed_at_ms:Date.now()-5000,is_pro_tier:true,account_tier:'pro',profile_index:'1'};
+  proSnap.windows[0].used_percent=42;
+  const r1=await w.message({type:'AUTO_SNAPSHOT',snapshot:proSnap},{id:'test-extension',url:w.tab.url,tab:{id:1}});
+  assert.equal(r1.accepted,true);
+  assert.equal(w.badge.text,'42%');
+
+  // Agora uma captura acidental vem de /u/0/usage com banner Free e 0%
+  w.tab.url='https://gemini.google.com/u/0/usage';
+  const freeSnap={...sample(),observed_at_ms:Date.now(),is_pro_tier:false,account_tier:'free',profile_index:'0'};
+  freeSnap.windows[0].used_percent=0;freeSnap.windows[1].used_percent=0;
+  const r2=await w.message({type:'AUTO_SNAPSHOT',snapshot:freeSnap},{id:'test-extension',url:w.tab.url,tab:{id:1}});
+  assert.equal(r2.accepted,false);
+  assert.equal(r2.code,'free_tier_overwrite_blocked');
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,42);
+  assert.equal(w.badge.text,'42%');
+  assert.equal(w.data.lastKnownUsageUrl,'https://gemini.google.com/u/1/usage?pageId=none');
+});
+
+test('extractor.js extrai em aba oculta (getClientRects vazio) e diferencia conta PRO (/u/1/usage) de conta Free (/u/0/usage)',()=>{
+  const ctx=vm.createContext({Intl,Date,Number,String,getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'})});
+  vm.runInContext(code('extractor.js'),ctx);
+  function makeEl(tag,text,children=[],parent=null){
+    const el={
+      nodeType:1,tagName:tag.toUpperCase(),parentElement:parent,children,
+      childNodes:text?[{nodeType:3,nodeValue:text},...children]:children,
+      getClientRects:()=>[],
+      matches:sel=>sel.split(',').some(s=>s.trim().toUpperCase()===tag.toUpperCase()),
+      closest:sel=>sel.includes('main')?main:null,
+      contains:other=>{for(let n=other;n;n=n.parentElement)if(n===el)return true;return false;},
+      querySelector:()=>null,
+      querySelectorAll:()=>{
+        const all=[];
+        const walk=node=>{for(const ch of node.children||[]){all.push(ch);walk(ch);}};
+        walk(el);
+        return all;
+      }
+    };
+    for(const c of children)c.parentElement=el;
+    return el;
+  }
+  let main;
+  function buildDoc(pathname,extraBadgeText){
+    const h1=makeEl('h1','Limites de uso');
+    const badge=makeEl('span',extraBadgeText);
+    const curTitle=makeEl('h2','Uso atual');
+    const curPct=makeEl('strong','Quantidade usada: 28%');
+    const curRst=makeEl('p','17:11: o limite de uso é redefinido');
+    const curCard=makeEl('section','',[curTitle,curPct,curRst]);
+    const wkTitle=makeEl('h2','Limite semanal');
+    const wkPct=makeEl('strong','Quantidade usada: 9%');
+    const wkRst=makeEl('p','20 de out., 09:11: o limite de uso é redefinido');
+    const wkCard=makeEl('section','',[wkTitle,wkPct,wkRst]);
+    const panel=makeEl('div','',[h1,badge,curCard,wkCard]);
+    main=makeEl('main','',[panel]);
+    return {
+      location:{pathname},
+      querySelectorAll:sel=>sel.includes('h1')?[h1]:main.querySelectorAll(sel)
+    };
+  }
+  const proRes=ctx.CodenotchGeminiQuotaPrototype.extract(buildDoc('/u/1/usage','PRO'),1792008000000);
+  assert.equal(proRes.status,'observed');
+  assert.equal(proRes.is_pro_tier,true);
+  assert.equal(proRes.account_tier,'pro');
+  assert.equal(proRes.profile_index,'1');
+  assert.equal(proRes.windows[0].used_percent,28);
+  assert.equal(proRes.windows[1].used_percent,9);
+
+  const freeRes=ctx.CodenotchGeminiQuotaPrototype.extract(buildDoc('/u/0/usage','Aumente o limite de uso'),1792008000000);
+  assert.equal(freeRes.status,'observed');
+  assert.equal(freeRes.is_pro_tier,false);
+  assert.equal(freeRes.account_tier,'free');
+  assert.equal(freeRes.profile_index,'0');
+});
+
 
 
 

@@ -3,7 +3,7 @@
   'use strict';
   const permission = { permissions: ['storage', 'webNavigation'], origins: ['https://gemini.google.com/*'] };
   function usageUrl(raw) {
-    try { const u = new URL(raw); return u.origin === 'https://gemini.google.com' && !u.username && !u.password && /^\/u\/\d+\/usage\/?$/u.test(u.pathname); }
+    try { const u = new URL(raw); return u.origin === 'https://gemini.google.com' && !u.username && !u.password && /^\/(?:u\/\d+\/)?usage\/?$/u.test(u.pathname); }
     catch { return false; }
   }
   function chatUrl(raw) {

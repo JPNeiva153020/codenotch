@@ -22,7 +22,10 @@
       try { return (await chrome.runtime.sendMessage({ type:'AUTO_CHECK' }))?.enabled === true; } catch { return false; }
     },
     read: () => CodenotchGeminiQuotaPrototype.extract(),
-    validate: raw => GeminiAutoCore.minimal(raw,raw?.observed_at_ms),
+    validate: raw => {
+      const m = GeminiAutoCore.minimal(raw,raw?.observed_at_ms);
+      return m ? { ...m, is_pro_tier: Boolean(raw?.is_pro_tier), account_tier: raw?.account_tier || 'unknown', profile_index: raw?.profile_index ?? null, profile_path: raw?.profile_path ?? null } : null;
+    },
     key: GeminiAutoCore.fingerprint,
     publish: async snapshot => {
       try { return await chrome.runtime.sendMessage({ type:'AUTO_SNAPSHOT', snapshot }); } catch { return {accepted:false,code:'worker_rejected'}; }
@@ -60,4 +63,5 @@
   window.addEventListener('pageshow', onShow);
   globalThis.CodenotchGeminiAutoSession = {stop,recheck:start};
   start();
+  try { return CodenotchGeminiQuotaPrototype.extract(); } catch { return null; }
 })();

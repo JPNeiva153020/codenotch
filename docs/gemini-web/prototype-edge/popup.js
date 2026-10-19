@@ -5,22 +5,31 @@ const button = document.getElementById('read');
 function allowedUrl(raw) {
   try {
     const url = new URL(raw);
-    return url.origin === 'https://gemini.google.com' && !url.username && !url.password && /^\/u\/\d+\/usage\/?$/u.test(url.pathname);
+    return url.origin === 'https://gemini.google.com' && !url.username && !url.password && /^\/(?:u\/\d+\/)?usage\/?$/u.test(url.pathname);
   } catch { return false; }
 }
-function usageTargetUrl(raw) {
+function extractProfileIndex(raw) {
   try {
     const url = new URL(raw);
-    if (url.origin !== 'https://gemini.google.com' || url.username || url.password) return 'https://gemini.google.com/usage';
+    if (url.origin !== 'https://gemini.google.com' || url.username || url.password) return null;
     const match = /^\/u\/(\d+)(?:\/|$)/u.exec(url.pathname);
-    return match ? `https://gemini.google.com/u/${match[1]}/usage` : 'https://gemini.google.com/usage';
-  } catch { return 'https://gemini.google.com/usage'; }
+    return match ? match[1] : null;
+  } catch { return null; }
+}
+function usageTargetUrl(raw, rememberedUrl) {
+  const direct = extractProfileIndex(raw);
+  if (direct !== null && direct !== '0') return `https://gemini.google.com/u/${direct}/usage?pageId=none`;
+  const remembered = extractProfileIndex(rememberedUrl);
+  if (remembered !== null && remembered !== '0') return `https://gemini.google.com/u/${remembered}/usage?pageId=none`;
+  return 'https://gemini.google.com/u/1/usage?pageId=none';
 }
 document.getElementById('clear').addEventListener('click', () => { output.textContent = ''; status.textContent = 'Leitura limpa.'; });
 document.getElementById('open-usage')?.addEventListener('click', async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.tabs.create({ url: usageTargetUrl(tab?.url) });
+    let rememberedUrl = null;
+    try { rememberedUrl = (await chrome.runtime?.sendMessage?.({ type: 'AUTO_STATE' }))?.lastKnownUsageUrl || null; } catch {}
+    await chrome.tabs.create({ url: usageTargetUrl(tab?.url, rememberedUrl) });
   } catch {
     status.textContent = 'Não foi possível abrir a página de limites.';
   }

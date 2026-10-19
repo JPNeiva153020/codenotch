@@ -1,9 +1,27 @@
 (() => {
   'use strict';
   const result=document.getElementById('auto-result'), label=document.getElementById('auto-status');
+  const topSubtitle=document.getElementById('top-subtitle'), topStatus=document.getElementById('status');
   let action = 0;
+  function syncTopBanner(data) {
+    if (topSubtitle) {
+      topSubtitle.textContent = data?.enabled
+        ? (data?.snapshot ? 'Leitura manual e modo automático ativos (sincronizado ao Codenotch).' : 'Leitura manual disponível. Modo automático ativo.')
+        : 'Leitura manual disponível. Modo automático desativado até seu consentimento.';
+    }
+    if (topStatus && data?.enabled && data?.snapshot) {
+      const cur = data.snapshot.windows?.find(w => w && w.id === 'current')?.used_percent;
+      const wk = data.snapshot.windows?.find(w => w && w.id === 'weekly')?.used_percent;
+      if (topStatus.textContent === 'Sem leitura. Protótipo sem conexão ao Codenotch.' || topStatus.textContent.startsWith('Sincronizado com o Codenotch')) {
+        topStatus.textContent = Number.isFinite(cur)
+          ? `Sincronizado com o Codenotch (Uso atual: ${cur}% | Semanal: ${Number.isFinite(wk) ? wk + '%' : '--'}).`
+          : 'Sincronizado com o Codenotch.';
+      }
+    }
+  }
   async function runRecheck(current) {
     try {
+      label.textContent='Atualizando em 2º plano...';
       const data=await chrome.runtime.sendMessage({type:'AUTO_RECHECK'});
       if (current !== action) return;
       if(data?.confirmed){
@@ -20,6 +38,7 @@
       const text={recent:'Observação recente; pode ter mudado.',historical:'Observação histórica.',unavailable:'Dados indisponíveis.'};
       label.textContent=(data?.enabled?'Automático ativado. ':'Automático desativado. ')+(text[data?.freshness]||text.unavailable);
       result.textContent=data?.snapshot?JSON.stringify({...data.snapshot,status:data.freshness==='historical'?'historical':data.snapshot.status},null,2):'';
+      syncTopBanner(data);
       const outsideUsage = data?.freshness === 'historical' || data?.freshness === 'unavailable';
       const observedAt = data?.snapshot?.observed_at_ms;
       const stale = !data?.snapshot || !Number.isFinite(observedAt) || Date.now() - observedAt > 60000;
@@ -49,6 +68,8 @@
     action++;
     result.textContent='';
     const manual=document.getElementById('result'); if (manual) manual.textContent='';
+    syncTopBanner({enabled:false,snapshot:null});
+    if (topStatus) topStatus.textContent='Sem leitura. Protótipo sem conexão ao Codenotch.';
     try { await chrome.runtime.sendMessage({type:'AUTO_ERASE'}); label.textContent='Dados apagados; automático desativado e acesso revogado.'; } catch { label.textContent='Falha ao apagar. Desligue/remova a extensão em edge://extensions.'; }
   });
   document.getElementById('auto-state').addEventListener('click',() => state(false));
