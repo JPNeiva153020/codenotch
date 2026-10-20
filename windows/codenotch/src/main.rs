@@ -597,7 +597,10 @@ pub(crate) fn refresh_provider(app: &AppHandle, provider: &str) -> bool {
         "grok" => grok::request_refresh(),
         "copilot" => copilot::request_refresh(),
         "gemini" => antigravity::request_refresh(),
-        "gemini_web" => gemini_web::request_refresh(),
+        "gemini_web" => {
+            gemini_web::request_refresh();
+            gemini_web::probe_in_background(app);
+        }
         "glm" => glm::request_refresh(),
         "opencode" => opencode::request_refresh(),
         _ => return false,

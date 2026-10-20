@@ -83,6 +83,10 @@ fn handle(app: &AppHandle, id: &str) {
         return;
     };
     if let Some(provider) = item.strip_prefix("open:") {
+        if provider == "gemini_web" {
+            crate::gemini_web::open_usage_window(app);
+            return;
+        }
         crate::open_provider_page(provider);
         return;
     }
