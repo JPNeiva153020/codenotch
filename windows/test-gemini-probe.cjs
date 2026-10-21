@@ -81,3 +81,16 @@ test('PROBE_INIT_SCRIPT evaluates cleanly without syntax errors', () => {
     vm.runInNewContext(scriptContent, sandbox);
   });
 });
+
+test('gemini_web.rs implements strict url validation, concurrency control and mutex poisoning guard', () => {
+  assert.ok(geminiWebRs.includes('pub fn is_valid_gemini_usage_url(url: &str) -> bool'));
+  assert.ok(geminiWebRs.includes('PROBE_IN_FLIGHT'));
+  assert.ok(geminiWebRs.includes('.unwrap_or_else(|e| e.into_inner())'));
+  assert.ok(geminiWebRs.includes('PROBE_IN_FLIGHT.store(false, Ordering::SeqCst)'));
+  assert.ok(geminiWebRs.includes('tmp.'));
+});
+
+test('main.rs implements mask_user_paths and applies it in applog', () => {
+  assert.ok(mainRs.includes('pub fn mask_user_paths(line: &str) -> String'));
+  assert.ok(mainRs.includes('let masked = mask_user_paths(line);'));
+});

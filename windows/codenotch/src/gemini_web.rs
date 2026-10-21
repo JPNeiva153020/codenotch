@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 pub const CURRENT_CYCLE_MS: u64 = 5 * 3_600 * 1_000;
 pub const WEEKLY_CYCLE_MS: u64 = 7 * 86_400 * 1_000;
 
+pub const DEFAULT_USAGE_URL: &str = "https://gemini.google.com/u/1/usage?pageId=none";
 pub const DESKTOP_POLL_SECS: u64 = 45;
 pub const IDLE_POLL_SECS: u64 = 120;
 pub const POLL_SECS: u64 = 2;
@@ -27,6 +28,8 @@ const EDGE_USER_AGENT: &str =
 
 static REFRESH: AtomicBool = AtomicBool::new(false);
 static LAST_PROBE_MS: AtomicU64 = AtomicU64::new(0);
+static PROBE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub const PROBE_INIT_SCRIPT: &str = r#"
 (() => {
@@ -229,9 +232,46 @@ pub struct GeminiWebConfig {
 impl Default for GeminiWebConfig {
     fn default() -> Self {
         Self {
-            url: "https://gemini.google.com/u/1/usage?pageId=none".to_string(),
+            url: DEFAULT_USAGE_URL.to_string(),
         }
     }
+}
+
+pub fn is_valid_gemini_usage_url(url: &str) -> bool {
+    if raw.contains('@') || raw.contains("..") || raw.contains('\\') {
+        return false;
+    }
+    let Ok(parsed) = raw.parse::<tauri::Url>() else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    if parsed.host_str() != Some("gemini.google.com") {
+        return false;
+    }
+    let path = parsed.path();
+    let valid_path = if path == "/usage" || path == "/usage/" {
+        true
+    } else if let Some(rest) = path.strip_prefix("/u/") {
+        let rest = rest.strip_suffix('/').unwrap_or(rest);
+        if let Some(digits) = rest.strip_suffix("/usage") {
+            !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !valid_path {
+        return false;
+    }
+    if let Some(q) = parsed.query() {
+        if q != "pageId=none" && !q.is_empty() {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn config_path() -> PathBuf {
@@ -242,7 +282,7 @@ pub fn load_config() -> GeminiWebConfig {
     let p = config_path();
     if let Ok(raw) = std::fs::read_to_string(&p) {
         if let Ok(cfg) = serde_json::from_str::<GeminiWebConfig>(&raw) {
-            if !cfg.url.is_empty() {
+            if is_valid_gemini_usage_url(&cfg.url) {
                 return cfg;
             }
         }
@@ -251,12 +291,16 @@ pub fn load_config() -> GeminiWebConfig {
 }
 
 pub fn save_config(cfg: &GeminiWebConfig) {
+    if !is_valid_gemini_usage_url(&cfg.url) {
+        return;
+    }
     let p = config_path();
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
-        let tmp = p.with_extension(format!("tmp.{}", std::process::id()));
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = p.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
         if std::fs::write(&tmp, json).is_ok() {
             let _ = std::fs::rename(&tmp, &p);
         }
@@ -288,7 +332,8 @@ pub fn save_state_atomically(path: &Path, content: &str) -> std::io::Result<()> 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -388,7 +433,9 @@ fn same_reading(a: &UsageSnapshot, b: &UsageSnapshot) -> bool {
 
 fn broadcast(app: &AppHandle, snap: UsageSnapshot) {
     let st = app.state::<AppState>();
-    *st.gemini_web.lock().unwrap() = snap.clone();
+    let mut lock = st.gemini_web.lock().unwrap_or_else(|e| e.into_inner());
+    *lock = snap.clone();
+    drop(lock);
     let _ = app.emit("gemini_web", &snap);
     crate::tray::refresh_menu(app);
 }
@@ -408,7 +455,14 @@ pub fn is_gemini_desktop_running() -> bool {
 }
 
 pub fn handle_probe_title(app: &AppHandle, window: &tauri::WebviewWindow, title: &str) {
+    if let Ok(cur_url) = window.url() {
+        if cur_url.scheme() != "https" || cur_url.host_str() != Some("gemini.google.com") {
+            return;
+        }
+    }
+
     if let Some(payload_json) = title.strip_prefix("__CODENOTCH_GW_OK__:") {
+        PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
         let state_p = state_path();
         if let Ok(()) = save_state_atomically(&state_p, payload_json) {
             let snap = read_from_path(&state_p, now_ms());
@@ -419,12 +473,22 @@ pub fn handle_probe_title(app: &AppHandle, window: &tauri::WebviewWindow, title:
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(payload_json) {
             if val.get("account_tier").and_then(|v| v.as_str()) == Some("pro") {
                 if let Some(p_path) = val.get("profile_path").and_then(|p| p.as_str()) {
-                    if p_path.starts_with("/u/") {
+                    let valid_profile = if p_path == "/usage" {
+                        true
+                    } else if let Some(digits) = p_path.strip_prefix("/u/").and_then(|r| r.strip_suffix("/usage")) {
+                        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+                    } else {
+                        false
+                    };
+
+                    if valid_profile {
                         let new_url = format!("https://gemini.google.com{}?pageId=none", p_path);
-                        let mut cfg = load_config();
-                        if cfg.url != new_url {
-                            cfg.url = new_url;
-                            save_config(&cfg);
+                        if is_valid_gemini_usage_url(&new_url) {
+                            let mut cfg = load_config();
+                            if cfg.url != new_url {
+                                cfg.url = new_url;
+                                save_config(&cfg);
+                            }
                         }
                     }
                 }
@@ -434,7 +498,8 @@ pub fn handle_probe_title(app: &AppHandle, window: &tauri::WebviewWindow, title:
         if !window.is_visible().unwrap_or(false) {
             let _ = window.destroy();
         }
-    } else if title == "__CODENOTCH_GW_AUTH__" {
+    } else if title == "__CODENOTCH_GW_AUTH__" || title.starts_with("__CODENOTCH_GW_ERR__:") {
+        PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
         if !window.is_visible().unwrap_or(false) {
             let _ = window.destroy();
         }
@@ -447,6 +512,7 @@ pub fn force_manual_probe(app: &AppHandle) {
             let _ = existing.destroy();
         }
     }
+    PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
     LAST_PROBE_MS.store(0, Ordering::Relaxed);
     request_refresh();
     probe_in_background(app);
@@ -456,6 +522,9 @@ pub fn probe_in_background(app: &AppHandle) {
     let now = now_ms();
     let last = LAST_PROBE_MS.load(Ordering::Relaxed);
     if now.saturating_sub(last) < 5_000 {
+        return;
+    }
+    if PROBE_IN_FLIGHT.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return;
     }
     LAST_PROBE_MS.store(now, Ordering::Relaxed);
@@ -472,13 +541,17 @@ pub fn probe_in_background(app: &AppHandle) {
 fn probe_in_background_now(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(PROBE_WINDOW_LABEL) {
         if w.is_visible().unwrap_or(false) {
+            PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
             return;
         }
         return;
     }
 
     let cfg = load_config();
-    let Ok(target_url) = cfg.url.parse() else { return };
+    let Ok(target_url) = cfg.url.parse() else {
+        PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        return;
+    };
 
     let app_for_title = app.clone();
     let builder = WebviewWindowBuilder::new(app, PROBE_WINDOW_LABEL, WebviewUrl::External(target_url))
@@ -493,16 +566,22 @@ fn probe_in_background_now(app: &AppHandle) {
             handle_probe_title(&app_for_title, &window, &title);
         });
 
-    if let Ok(w) = builder.build() {
-        let w_handle = w.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(20));
-            if let Ok(visible) = w_handle.is_visible() {
-                if !visible {
-                    let _ = w_handle.destroy();
+    match builder.build() {
+        Ok(w) => {
+            let w_handle = w.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(20));
+                if let Ok(visible) = w_handle.is_visible() {
+                    if !visible {
+                        let _ = w_handle.destroy();
+                        PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
+                    }
                 }
-            }
-        });
+            });
+        }
+        Err(_) => {
+            PROBE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -781,9 +860,34 @@ mod tests {
     #[test]
     fn config_defaults_and_serialization() {
         let def = GeminiWebConfig::default();
-        assert_eq!(def.url, "https://gemini.google.com/u/1/usage?pageId=none");
+        assert_eq!(def.url, DEFAULT_USAGE_URL);
         let serialized = serde_json::to_string(&def).unwrap();
         let parsed: GeminiWebConfig = serde_json::from_str(&serialized).unwrap();
         assert_eq!(def, parsed);
+    }
+
+    #[test]
+    fn url_validation_accepts_valid_gemini_urls() {
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/usage"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/usage/"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/usage?pageId=none"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/u/0/usage"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/u/1/usage"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/u/2/usage?pageId=none"));
+        assert!(is_valid_gemini_usage_url("https://gemini.google.com/u/10/usage?pageId=none"));
+    }
+
+    #[test]
+    fn url_validation_rejects_malicious_or_external_urls() {
+        assert!(!is_valid_gemini_usage_url("http://gemini.google.com/usage"));
+        assert!(!is_valid_gemini_usage_url("https://evil.com/usage"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com.evil.com/usage"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com/app"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com/u/1/app"));
+        assert!(!is_valid_gemini_usage_url("https://user:pass@gemini.google.com/usage"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com/usage/../admin"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com\\evil/usage"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com/u/abc/usage"));
+        assert!(!is_valid_gemini_usage_url("https://gemini.google.com/usage?extra=param"));
     }
 }

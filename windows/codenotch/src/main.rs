@@ -794,8 +794,52 @@ fn zoom_notch(w: &tauri::WebviewWindow, monitor_scale: f64, size: f64) {
 /// which was the only thing that ever emptied it; appended instead, it needs a bound of its own.
 const RUN_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
+/// Masks Windows user directories (e.g. C:\Users\alice\... or /Users/bob/...) to prevent
+/// personal username leaks in logs.
+pub fn mask_user_paths(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut remaining = line;
+    let marker_bs = "\\Users\\";
+    let marker_fs = "/Users/";
+
+    while !remaining.is_empty() {
+        let next_match = [
+            remaining.find(marker_bs).map(|pos| (pos, marker_bs, '\\')),
+            remaining.find(marker_fs).map(|pos| (pos, marker_fs, '/')),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|&(pos, _, _)| pos);
+
+        if let Some((pos, marker, sep)) = next_match {
+            result.push_str(&remaining[..pos]);
+            result.push_str(marker);
+            result.push_str("<USER>");
+
+            let after_marker = &remaining[pos + marker.len()..];
+            if let Some(slash_pos) = after_marker.find(sep) {
+                remaining = &after_marker[slash_pos..];
+            } else {
+                remaining = "";
+            }
+        } else {
+            result.push_str(remaining);
+            break;
+        }
+    }
+
+    if let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(|s| s.to_string())) {
+        if !home.is_empty() && result.contains(&home) {
+            result = result.replace(&home, "C:\\Users\\<USER>");
+        }
+    }
+
+    result
+}
+
 pub fn applog(line: &str) {
     use std::io::Write;
+    let masked = mask_user_paths(line);
     let log = config::config_path().with_file_name("run.log");
     // Past the cap the log starts again rather than growing for as long as the app runs.
     let full = std::fs::metadata(&log).map(|m| m.len() > RUN_LOG_MAX_BYTES).unwrap_or(false);
@@ -805,7 +849,7 @@ pub fn applog(line: &str) {
         std::fs::OpenOptions::new().create(true).append(true).open(&log)
     };
     if let Ok(mut f) = opened {
-        let _ = writeln!(f, "{line}");
+        let _ = writeln!(f, "{masked}");
     }
 }
 
@@ -2494,5 +2538,17 @@ mod tests {
     fn a_request_count_still_leads_when_it_is_all_there_is() {
         let requests = LimitWindow { id: "requests".into(), count: Some(79), ..Default::default() };
         assert_eq!(pick("gemini", std::slice::from_ref(&requests)), Some("requests"));
+    }
+
+    #[test]
+    fn mask_user_paths_replaces_usernames() {
+        assert_eq!(
+            mask_user_paths("Saved state to C:\\Users\\johndoe\\AppData\\Roaming\\codenotch"),
+            "Saved state to C:\\Users\\<USER>\\AppData\\Roaming\\codenotch"
+        );
+        assert_eq!(
+            mask_user_paths("Path /Users/janedoe/Library/Application Support"),
+            "Path /Users/<USER>/Library/Application Support"
+        );
     }
 }

@@ -28,7 +28,7 @@ jobs:
     name: NSIS installer
     # Only the release step writes anything; `gh release upload` fails without it.
     permissions:
-      contents: write
+      contents: read
     runs-on: windows-latest
     defaults:
       run:
@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned by commit: this job holds contents: write, and `stable` is a
+      # Pinned by commit: this job holds contents: read, and `stable` is a
       # moving branch that would let the action change under us.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
