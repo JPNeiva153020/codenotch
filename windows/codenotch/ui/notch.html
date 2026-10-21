@@ -72,6 +72,8 @@
   :root{--ring:44px;--k:calc(44 / 56)}
   .ringwrap{position:relative;width:var(--ring);height:var(--ring);transition:transform .3s cubic-bezier(.34,1.4,.64,1)}
   .ringwrap.pressed{transform:scale(.93)}
+  @keyframes pulse-ring{0%{opacity:1}50%{opacity:.35}100%{opacity:1}}
+  .ringwrap.updating{animation:pulse-ring .8s ease-in-out infinite}
   .ringwrap > svg.ring,.ringwrap > svg.reading,.ringwrap > svg.activity{position:absolute;inset:0;overflow:visible} /* pins only the ring itself; an inline logo svg must not match this or it ends up in the top-left corner */
   .glyph{
     position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
@@ -1282,6 +1284,7 @@ function renderRing(){
     const h=ringWindow(p.snap,p.base,headlineOf(p.snap,p.base));
     let inner=`<circle cx="28" cy="28" r="22" fill="${HOLE}"/><circle cx="28" cy="28" r="25" fill="none" stroke="${TRACK}" stroke-width="5"/>`;
     wrap.classList.toggle('pressed',!!refreshing[p.id]);
+    wrap.classList.toggle('updating',!!refreshing[p.id]);
     reading.innerHTML=h && h.count==null?svgArc(25,Math.min(Math.max(meteredFraction(h.used,showRemaining),0),1),tone(h.used),5):'';
     if(weeklyRing!=='off'){ // the week, thinner and at its own radius, in its own colour: a session at 12% beside a week at 91% is the case this exists for
       const wk=ringWindow(p.snap,p.base,weeklyOf(p.snap,p.base));
@@ -1380,6 +1383,7 @@ function renderCard(){
   // directory's slug and the subscriptionType read out of .credentials.json.
   let html=`<div class="c-head">${headIcon}<span class="c-title">${esc(ui().title(p.name))}</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">${ui().updated(ago(snap.fetched_at))}</div>`;
+  if(refreshing[p.id]) html+=`<div class="c-sub" style="color:var(--tint);animation:pulse-ring .8s infinite">${esc(textCopy('Atualizando...'))}</div>`;
   if(snap.status==='needsAuth'){
     const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',grok:'Run grok login to see usage.',copilot:'Run gh auth login to see usage.',opencode:'Run opencode auth login to see usage.',gemini:'Sign in to Antigravity to see usage.'}[p.base]||'';
     html+=`<div class="c-note">${textCopy(who)}<br>${esc(textCopy(snap.note||''))}</div>`;
@@ -1640,6 +1644,7 @@ function refreshRing(id){
   refreshing[id]={at:Date.now(),timer:setTimeout(()=>settle(id),PRESS_MAX)};
   renderRing();
   turnReading(id);
+  if(card.classList.contains('show')&&hoverId===id) renderCard();
   // The cell id addresses the DOM, the provider id addresses Rust: a second Claude
   // account's cell is `claude@work`, which no command answers to.
   const provider=(providers().find(p=>p.id===id)||{}).base||id;
@@ -1660,11 +1665,17 @@ function settle(id){
   if(wait>0){ r.timer=setTimeout(()=>settle(id),wait); return; }
   delete refreshing[id];
   renderRing();
+  if(card.classList.contains('show')&&hoverId===id) renderCard();
 }
 // Alt+drag, the Mac's ⌥-drag: round the screen's border, drawn by carry.html meanwhile. Without Alt
 // a press on the pill is only ever a click — a ring refreshes (#244) — so one that slips can no
 // longer carry the notch off (#251).
 pill.addEventListener('mousedown',e=>{ if(e.button!==0||folded)return; press={x:e.clientX,y:e.clientY,id:cellAt(e.clientX,e.clientY)||hoverId,alt:e.altKey}; });
+pill.addEventListener('click',e=>{
+  if(e.button!==0||folded||dragging)return;
+  const id=cellAt(e.clientX,e.clientY)||(e.target.closest('.cell')?.dataset?.p)||hoverId;
+  if(id) refreshRing(id);
+});
 document.addEventListener('mousemove',e=>{
   if(!press||dragging||!press.alt)return;
   if(Math.abs(e.clientY-press.y)>4||Math.abs(e.clientX-press.x)>4){

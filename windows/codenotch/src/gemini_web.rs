@@ -15,8 +15,12 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 pub const CURRENT_CYCLE_MS: u64 = 5 * 3_600 * 1_000;
 pub const WEEKLY_CYCLE_MS: u64 = 7 * 86_400 * 1_000;
 
+pub const DESKTOP_POLL_SECS: u64 = 45;
+pub const IDLE_POLL_SECS: u64 = 120;
+pub const POLL_SECS: u64 = 2;
+pub const RESCAN_SECS: u64 = 10;
+
 const STALE_AFTER_MS: u64 = 15 * 60 * 1000;
-const RESCAN_SECS: u64 = 30;
 const PROBE_WINDOW_LABEL: &str = "gemini_web_probe";
 const EDGE_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
@@ -72,121 +76,124 @@ pub const PROBE_INIT_SCRIPT: &str = r#"
       };
     }
 
-    if (loc.pathname && loc.pathname.includes('/usage')) {
-      const normalize = s => String(s || '').replace(/\s+/gu, ' ').trim();
-      const ownText = el => {
-        let text = '';
-        for (const node of el.childNodes) {
-          if (node.nodeType === 3) text += ' ' + node.nodeValue;
-        }
-        return normalize(text);
-      };
+    let lastSentSignature = '';
+    let probeSeq = 0;
 
-      const parseReset = text => {
-        const ptMatch = text.match(/^(?:(\d{1,2})\s+de\s+([a-zç]+)\s*\.?\s*,?\s*)?(\d{1,2})\s*:\s*(\d{2})\s*:\s*o limite de uso é redefinido\.?$/iu);
-        if (ptMatch) {
-          const hour = Number(ptMatch[3]), minute = Number(ptMatch[4]);
-          let day = null, month = null;
-          if (ptMatch[1]) {
-            const months = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
-            month = months.indexOf(ptMatch[2].toLowerCase()) + 1;
-            day = Number(ptMatch[1]);
-          }
-          return { day, month, year: null, hour, minute, timezone: null, epoch_ms: null, needs_confirmation: true };
-        }
-        const enMatch = text.match(/^(?:([a-z]+)\s+(\d{1,2})\s*,?\s*)?(\d{1,2})\s*:\s*(\d{2})(?:\s*(am|pm))?\s*:\s*usage limit resets\.?$/iu);
-        if (enMatch) {
-          let hour = Number(enMatch[3]), minute = Number(enMatch[4]);
-          const ampm = enMatch[5]?.toLowerCase();
-          if (ampm === 'pm' && hour < 12) hour += 12;
-          if (ampm === 'am' && hour === 12) hour = 0;
-          let day = null, month = null;
-          if (enMatch[1]) {
-            const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-            month = months.indexOf(enMatch[1].toLowerCase().slice(0, 3)) + 1;
-            day = Number(enMatch[2]);
-          }
-          return { day, month, year: null, hour, minute, timezone: null, epoch_ms: null, needs_confirmation: true };
-        }
-        return null;
-      };
+    const runExtraction = () => {
+      try {
+        const curLoc = window.location;
+        if (!curLoc || !curLoc.pathname || !curLoc.pathname.includes('/usage')) return;
 
-      const calculateEpochMs = (r, nowMs) => {
-        if (!r || r.hour === null || r.minute === null) return null;
-        const now = new Date(nowMs);
-        if (r.day !== null && r.month !== null) {
-          let dt = new Date(now.getFullYear(), r.month - 1, r.day, r.hour, r.minute, 0, 0);
-          if (nowMs - dt.getTime() > 30 * 86400000) {
-            dt = new Date(now.getFullYear() + 1, r.month - 1, r.day, r.hour, r.minute, 0, 0);
+        const normalize = s => String(s || '').replace(/\s+/gu, ' ').trim();
+        const ownText = el => {
+          let text = '';
+          for (const node of el.childNodes) {
+            if (node.nodeType === 3) text += ' ' + node.nodeValue;
+          }
+          return normalize(text);
+        };
+
+        const parseReset = text => {
+          const ptMatch = text.match(/^(?:(\d{1,2})\s+de\s+([a-zç]+)\s*\.?\s*,?\s*)?(\d{1,2})\s*:\s*(\d{2})\s*:\s*o limite de uso é redefinido\.?$/iu);
+          if (ptMatch) {
+            const hour = Number(ptMatch[3]), minute = Number(ptMatch[4]);
+            let day = null, month = null;
+            if (ptMatch[1]) {
+              const months = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+              month = months.indexOf(ptMatch[2].toLowerCase()) + 1;
+              day = Number(ptMatch[1]);
+            }
+            return { day, month, year: null, hour, minute, timezone: null, epoch_ms: null, needs_confirmation: true };
+          }
+          const enMatch = text.match(/^(?:([a-z]+)\s+(\d{1,2})\s*,?\s*)?(\d{1,2})\s*:\s*(\d{2})(?:\s*(am|pm))?\s*:\s*usage limit resets\.?$/iu);
+          if (enMatch) {
+            let hour = Number(enMatch[3]), minute = Number(enMatch[4]);
+            const ampm = enMatch[5]?.toLowerCase();
+            if (ampm === 'pm' && hour < 12) hour += 12;
+            if (ampm === 'am' && hour === 12) hour = 0;
+            let day = null, month = null;
+            if (enMatch[1]) {
+              const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+              month = months.indexOf(enMatch[1].toLowerCase().slice(0, 3)) + 1;
+              day = Number(enMatch[2]);
+            }
+            return { day, month, year: null, hour, minute, timezone: null, epoch_ms: null, needs_confirmation: true };
+          }
+          return null;
+        };
+
+        const calculateEpochMs = (r, nowMs) => {
+          if (!r || r.hour === null || r.minute === null) return null;
+          const now = new Date(nowMs);
+          if (r.day !== null && r.month !== null) {
+            let dt = new Date(now.getFullYear(), r.month - 1, r.day, r.hour, r.minute, 0, 0);
+            if (nowMs - dt.getTime() > 30 * 86400000) {
+              dt = new Date(now.getFullYear() + 1, r.month - 1, r.day, r.hour, r.minute, 0, 0);
+            }
+            return dt.getTime();
+          }
+          const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), r.hour, r.minute, 0, 0);
+          if (dt.getTime() <= nowMs - 60000) {
+            dt.setDate(dt.getDate() + 1);
           }
           return dt.getTime();
-        }
-        const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), r.hour, r.minute, 0, 0);
-        if (dt.getTime() <= nowMs - 60000) {
-          dt.setDate(dt.getDate() + 1);
-        }
-        return dt.getTime();
-      };
+        };
 
-      let attempts = 0;
-      const interval = setInterval(() => {
-        attempts++;
-        if (attempts > 30) {
-          clearInterval(interval);
-          return;
-        }
+        const allEls = [...document.querySelectorAll('div,p,span,h1,h2,h3,h4,strong')];
+        const textNodes = allEls.map(el => ({ el, text: ownText(el) })).filter(x => x.text.length > 0);
 
-        try {
-          const allEls = [...document.querySelectorAll('div,p,span,h1,h2,h3,h4,strong')];
-          const textNodes = allEls.map(el => ({ el, text: ownText(el) })).filter(x => x.text.length > 0);
+        const hasCurrent = textNodes.some(x => /^(?:Uso atual|Current usage|Current session)$/iu.test(x.text));
+        const hasWeekly = textNodes.some(x => /^(?:Limite semanal|Weekly limit)$/iu.test(x.text));
 
-          const hasCurrent = textNodes.some(x => /^(?:Uso atual|Current usage|Current session)$/iu.test(x.text));
-          const hasWeekly = textNodes.some(x => /^(?:Limite semanal|Weekly limit)$/iu.test(x.text));
+        if (!hasCurrent && !hasWeekly) return;
 
-          if (!hasCurrent && !hasWeekly) return;
+        const isPro = textNodes.some(x => /^(?:PRO|Ultra|Advanced)$/iu.test(x.text)) &&
+                      !textNodes.some(x => /Aumente o limite de uso|Fazer upgrade|Upgrade to/iu.test(x.text));
+        const isFree = textNodes.some(x => /Aumente o limite de uso|Fazer upgrade|Upgrade to/iu.test(x.text));
+        const accountTier = isPro ? 'pro' : (isFree ? 'free' : 'unknown');
 
-          const isPro = textNodes.some(x => /^(?:PRO|Ultra|Advanced)$/iu.test(x.text)) &&
-                        !textNodes.some(x => /Aumente o limite de uso|Fazer upgrade|Upgrade to/iu.test(x.text));
-          const isFree = textNodes.some(x => /Aumente o limite de uso|Fazer upgrade|Upgrade to/iu.test(x.text));
-          const accountTier = isPro ? 'pro' : (isFree ? 'free' : 'unknown');
-
-          const extractCard = (labelPattern, id) => {
-            const labelEntry = textNodes.find(x => labelPattern.test(x.text));
-            if (!labelEntry) return null;
-            let container = labelEntry.el.parentElement;
-            for (let d = 0; d < 5 && container && container !== document.body; d++) {
-              const subNodes = [...container.querySelectorAll('div,p,span,strong')].map(e => ownText(e)).filter(Boolean);
-              const pctText = subNodes.find(t => /(?:Quantidade usada|Amount used)\s*:\s*(\d{1,3}(?:[.,]\d+)?)\s*%/iu.test(t));
-              const resetText = subNodes.find(t => /(?:o limite de uso é redefinido|usage limit resets)/iu.test(t));
-              if (pctText && resetText) {
-                const matchPct = pctText.match(/(?:Quantidade usada|Amount used)\s*:\s*(\d{1,3}(?:[.,]\d+)?)\s*%/iu);
-                const pct = matchPct ? Number(matchPct[1].replace(',', '.')) : NaN;
-                const reset = parseReset(resetText);
-                if (Number.isFinite(pct) && reset) {
-                  return {
-                    id,
-                    status: 'observed',
-                    used_percent: pct,
-                    remaining_percent: Number((100 - pct).toFixed(6)),
-                    reset,
-                    issues: []
-                  };
-                }
+        const extractCard = (labelPattern, id) => {
+          const labelEntry = textNodes.find(x => labelPattern.test(x.text));
+          if (!labelEntry) return null;
+          let container = labelEntry.el.parentElement;
+          for (let d = 0; d < 5 && container && container !== document.body; d++) {
+            const subNodes = [...container.querySelectorAll('div,p,span,strong')].map(e => ownText(e)).filter(Boolean);
+            const pctText = subNodes.find(t => /(?:Quantidade usada|Amount used)\s*:\s*(\d{1,3}(?:[.,]\d+)?)\s*%/iu.test(t));
+            const resetText = subNodes.find(t => /(?:o limite de uso é redefinido|usage limit resets)/iu.test(t));
+            if (pctText && resetText) {
+              const matchPct = pctText.match(/(?:Quantidade usada|Amount used)\s*:\s*(\d{1,3}(?:[.,]\d+)?)\s*%/iu);
+              const pct = matchPct ? Number(matchPct[1].replace(',', '.')) : NaN;
+              const reset = parseReset(resetText);
+              if (Number.isFinite(pct) && reset) {
+                return {
+                  id,
+                  status: 'observed',
+                  used_percent: pct,
+                  remaining_percent: Number((100 - pct).toFixed(6)),
+                  reset,
+                  issues: []
+                };
               }
-              container = container.parentElement;
             }
-            return null;
-          };
+            container = container.parentElement;
+          }
+          return null;
+        };
 
-          const currentCard = extractCard(/^(?:Uso atual|Current usage|Current session)$/iu, 'current');
-          const weeklyCard = extractCard(/^(?:Limite semanal|Weekly limit)$/iu, 'weekly');
+        const currentCard = extractCard(/^(?:Uso atual|Current usage|Current session)$/iu, 'current');
+        const weeklyCard = extractCard(/^(?:Limite semanal|Weekly limit)$/iu, 'weekly');
 
-          if (currentCard && weeklyCard) {
-            clearInterval(interval);
-            const now = Date.now();
-            currentCard.reset.epoch_ms = calculateEpochMs(currentCard.reset, now);
-            weeklyCard.reset.epoch_ms = calculateEpochMs(weeklyCard.reset, now);
+        if (currentCard && weeklyCard) {
+          const now = Date.now();
+          currentCard.reset.epoch_ms = calculateEpochMs(currentCard.reset, now);
+          weeklyCard.reset.epoch_ms = calculateEpochMs(weeklyCard.reset, now);
 
+          const curPath = window.location.pathname || null;
+          const sig = `${curPath}|${accountTier}|${currentCard.used_percent}|${currentCard.reset.epoch_ms}|${weeklyCard.used_percent}|${weeklyCard.reset.epoch_ms}`;
+
+          if (sig !== lastSentSignature) {
+            lastSentSignature = sig;
+            probeSeq++;
             const payload = {
               schema_version: 1,
               provider: 'gemini_web',
@@ -196,16 +203,20 @@ pub const PROBE_INIT_SCRIPT: &str = r#"
               status: 'observed',
               observed_at_ms: now,
               account_tier: accountTier,
-              profile_path: window.location.pathname || null,
+              profile_path: curPath,
+              seq: probeSeq,
               windows: [currentCard, weeklyCard],
               issues: []
             };
 
             document.title = '__CODENOTCH_GW_OK__:' + JSON.stringify(payload);
           }
-        } catch (e) {}
-      }, 500);
-    }
+        }
+      } catch (e) {}
+    };
+
+    setInterval(runExtraction, 500);
+    setTimeout(runExtraction, 100);
   } catch (err) {}
 })();
 "#;
@@ -400,6 +411,8 @@ pub fn handle_probe_title(app: &AppHandle, window: &tauri::WebviewWindow, title:
     if let Some(payload_json) = title.strip_prefix("__CODENOTCH_GW_OK__:") {
         let state_p = state_path();
         if let Ok(()) = save_state_atomically(&state_p, payload_json) {
+            let snap = read_from_path(&state_p, now_ms());
+            broadcast(app, snap);
             request_refresh();
         }
 
@@ -428,10 +441,21 @@ pub fn handle_probe_title(app: &AppHandle, window: &tauri::WebviewWindow, title:
     }
 }
 
+pub fn force_manual_probe(app: &AppHandle) {
+    if let Some(existing) = app.get_webview_window(PROBE_WINDOW_LABEL) {
+        if !existing.is_visible().unwrap_or(false) {
+            let _ = existing.destroy();
+        }
+    }
+    LAST_PROBE_MS.store(0, Ordering::Relaxed);
+    request_refresh();
+    probe_in_background(app);
+}
+
 pub fn probe_in_background(app: &AppHandle) {
     let now = now_ms();
     let last = LAST_PROBE_MS.load(Ordering::Relaxed);
-    if now.saturating_sub(last) < 10_000 {
+    if now.saturating_sub(last) < 5_000 {
         return;
     }
     LAST_PROBE_MS.store(now, Ordering::Relaxed);
@@ -543,7 +567,9 @@ pub fn start(app: AppHandle) {
         let mut last_probe_eval = Instant::now();
 
         loop {
-            let mut should_read = REFRESH.swap(false, Ordering::Relaxed);
+            let force_emit = REFRESH.swap(false, Ordering::Relaxed);
+            let mut should_read = force_emit;
+
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Ok(ev)) => {
                     if ev.paths.iter().any(|p| {
@@ -578,8 +604,7 @@ pub fn start(app: AppHandle) {
                 }
             }
 
-            let force_emit = REFRESH.swap(false, Ordering::Relaxed);
-            if should_read || force_emit || last_scan.elapsed() >= Duration::from_secs(RESCAN_SECS) {
+            if should_read || last_scan.elapsed() >= Duration::from_secs(RESCAN_SECS) {
                 last_scan = Instant::now();
                 let next = read_from_path(&path, now_ms());
                 if force_emit || !same_reading(&last, &next) {
@@ -588,14 +613,17 @@ pub fn start(app: AppHandle) {
                 }
             }
 
-            if last_probe_eval.elapsed() >= Duration::from_secs(RESCAN_SECS) {
+            if last_probe_eval.elapsed() >= Duration::from_secs(POLL_SECS) {
                 last_probe_eval = Instant::now();
                 let snap = read_from_path(&path, now_ms());
                 let age_ms = now_ms().saturating_sub(snap.fetched_at);
                 let is_desktop = is_gemini_desktop_running();
-                let needs_probe = snap.status != "ok"
-                    || (is_desktop && age_ms > 2 * 60 * 1000)
-                    || age_ms > 5 * 60 * 1000;
+                let max_age_ms = if is_desktop {
+                    DESKTOP_POLL_SECS * 1000
+                } else {
+                    IDLE_POLL_SECS * 1000
+                };
+                let needs_probe = snap.status != "ok" || age_ms >= max_age_ms;
                 if needs_probe {
                     probe_in_background(&app);
                 }

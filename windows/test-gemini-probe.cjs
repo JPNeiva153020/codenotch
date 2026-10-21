@@ -19,9 +19,10 @@ test('gemini_web.rs defines PROBE_INIT_SCRIPT with visibility shim, rAF fallback
   assert.ok(geminiWebRs.includes('usage limit resets'));
 });
 
-test('gemini_web.rs implements probe_in_background, open_usage_window and config persistence', () => {
+test('gemini_web.rs implements probe_in_background, open_usage_window, force_manual_probe and config persistence', () => {
   assert.ok(geminiWebRs.includes('pub fn probe_in_background(app: &AppHandle)'));
   assert.ok(geminiWebRs.includes('pub fn open_usage_window(app: &AppHandle)'));
+  assert.ok(geminiWebRs.includes('pub fn force_manual_probe(app: &AppHandle)'));
   assert.ok(geminiWebRs.includes('pub fn is_gemini_desktop_running() -> bool'));
   assert.ok(geminiWebRs.includes('gemini-web-config.json'));
   assert.ok(geminiWebRs.includes('https://gemini.google.com/u/1/usage?pageId=none'));
@@ -32,10 +33,9 @@ test('notchmenu.rs routes open:gemini_web to gemini_web::open_usage_window(app)'
   assert.ok(notchMenuRs.includes('crate::gemini_web::open_usage_window(app);'));
 });
 
-test('main.rs triggers probe_in_background on refresh_provider("gemini_web")', () => {
+test('main.rs triggers force_manual_probe on refresh_provider("gemini_web")', () => {
   assert.ok(mainRs.includes('"gemini_web" => {'));
-  assert.ok(mainRs.includes('gemini_web::request_refresh();'));
-  assert.ok(mainRs.includes('gemini_web::probe_in_background(app);'));
+  assert.ok(mainRs.includes('gemini_web::force_manual_probe(app);'));
 });
 
 test('PROBE_INIT_SCRIPT evaluates cleanly without syntax errors', () => {
