@@ -238,10 +238,10 @@ impl Default for GeminiWebConfig {
 }
 
 pub fn is_valid_gemini_usage_url(url: &str) -> bool {
-    if raw.contains('@') || raw.contains("..") || raw.contains('\\') {
+    if url.contains('@') || url.contains("..") || url.contains('\\') {
         return false;
     }
-    let Ok(parsed) = raw.parse::<tauri::Url>() else {
+    let Ok(parsed) = url.parse::<tauri::Url>() else {
         return false;
     };
     if parsed.scheme() != "https" {
