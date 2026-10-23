@@ -1,3 +1,5 @@
+> Esta branch usa por padrão a distribuição experimental **Codenotch Gemini Web**. Consulte [identidade, instalação, consentimento e atualizações manuais](../docs/gemini-web/DISTRIBUTION-WINDOWS.md). O conteúdo abaixo documenta também recursos herdados do port original.
+
 # Codenotch for Windows
 
 A Windows port of [Codenotch](https://github.com/vinzdg/codenotch) — the usage notch that

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Codenotch",
-  "version": "1.23.0",
-  "identifier": "com.immidi.codenotch",
+  "productName": "Codenotch Gemini Web",
+  "version": "1.23.0-gemini.1",
+  "identifier": "com.codenotch.geminiweb",
   "build": {
     "frontendDist": "ui"
   },
@@ -22,7 +22,8 @@
         "shadow": false,
         "visible": false,
         "focus": false,
-        "focusable": false
+        "focusable": false,
+        "title": "Codenotch Gemini Web"
       }
     ],
     "security": {
@@ -41,17 +42,33 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "publisher": "Codenotch Gemini Web contributors",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Codenotch Gemini Web"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "allowDowngrades": false
+    },
+    "useLocalToolsDir": true,
+    "licenseFile": "../../LICENSE",
+    "resources": {
+      "../../LICENSE": "LICENSE.txt"
+    }
   },
   "plugins": {
     "updater": {
-      "endpoints": [
-        "https://github.com/vinzdg/codenotch/releases/latest/download/latest.json"
-      ],
+      "endpoints": [],
       "pubkey": "REPLACE_WITH_TAURI_PUBLIC_KEY",
       "windows": {
         "installMode": "passive"
       }
     }
-  }
+  },
+  "mainBinaryName": "codenotch-gemini-web"
 }

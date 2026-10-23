@@ -22,6 +22,10 @@ mod grok;
 mod copilot;
 mod antigravity;
 mod gemini_web;
+mod gemini_lab_profile;
+mod distribution;
+#[cfg(feature = "gemini-web-lab")]
+mod gemini_web_lab;
 mod glm;
 mod opencode;
 mod agy_cli;
@@ -43,7 +47,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// and its tail on the left. `fitZoom` in ui/notch.html divides by the same width.
 pub const NOTCH_W: f64 = 360.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r33";
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/gemini-web.1");
 /// The notch window's long side: the upright window's height, and both sides of the flat one.
 ///
 /// Five cells make a 447 px pill; its fillets add 38.7 px at each end and the settings orb reaches
@@ -624,6 +628,33 @@ fn refresh_ring(app: AppHandle, provider: String) -> bool {
 #[tauri::command]
 fn get_antigravity(state: tauri::State<AppState>) -> usage::UsageSnapshot {
     state.antigravity.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_gemini_auto() -> bool { gemini_web::load_config().automatic_enabled }
+
+#[tauri::command]
+fn set_gemini_auto(app: AppHandle, window: tauri::WebviewWindow, on:bool) -> Result<(),String> {
+    let url=window.url().map_err(|_|"settings unavailable")?;
+    if !distribution::is_local_settings(window.label(),&url) { return Err("local settings action required".into()); }
+    gemini_web::set_automatic_preference(on).map_err(String::from)?;
+    gemini_web::stop_probe(&app);gemini_web::start(app.clone());
+    if on { gemini_web::force_manual_probe(&app); }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_gemini_usage(app: AppHandle, window: tauri::WebviewWindow) -> Result<(),String> {
+    let url=window.url().map_err(|_|"settings unavailable")?;
+    if !distribution::is_local_settings(window.label(),&url) { return Err("local settings action required".into()); }
+    gemini_web::open_usage_window(&app);Ok(())
+}
+
+#[tauri::command]
+fn get_distribution_info() -> serde_json::Value {
+    serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"build":BUILD,
+        "channel":if distribution::IS_FORK {"experimental-manual"}else{"upstream"},
+        "hooks_supported":!distribution::IS_FORK})
 }
 
 #[tauri::command]
@@ -1954,9 +1985,24 @@ fn adopt_system_proxy() {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "gemini-web-lab")]
+    if !args.get(1).is_some_and(|arg| arg.starts_with("--gemini-web-lab")) { std::process::exit(2); }
+    if args.get(1).is_some_and(|arg| arg.starts_with("--gemini-web-lab")) {
+        #[cfg(feature = "gemini-web-lab")]
+        {
+            if gemini_web_lab::run(&args).is_err() { std::process::exit(2); }
+            return;
+        }
+        #[cfg(not(feature = "gemini-web-lab"))]
+        std::process::exit(2);
+    }
+    // A compatibility-check build must never open the original data directory under fork branding.
+    if !distribution::IS_FORK && env!("CARGO_PKG_VERSION").contains("-gemini.") {
+        std::process::exit(2);
+    }
     #[cfg(windows)]
     adopt_system_proxy();
-    let args: Vec<String> = std::env::args().collect();
     if let Some(cmd) = args.get(1) {
         // Attaching on the GUI path too tied the notch to whatever cmd.exe launched it: closing that
         // window sends CTRL_CLOSE_EVENT to every process on the console, and with no handler the
@@ -2042,6 +2088,10 @@ fn main() {
             get_copilot,
             get_antigravity,
             get_gemini_web,
+            get_distribution_info,
+            open_gemini_usage,
+            get_gemini_auto,
+            set_gemini_auto,
             get_glm,
             get_opencode,
             get_glyphs,
@@ -2125,7 +2175,7 @@ fn main() {
             updater::check_on_launch(&handle);
             // Honours the saved switches: a notch hidden last time stays hidden.
             apply_visibility(&handle);
-            server::start(handle.clone(), port);
+            if !distribution::IS_FORK { server::start(handle.clone(), port); }
             watcher::start(handle.clone());
             usage::start(handle.clone());
             codex::start(handle.clone());
@@ -2185,7 +2235,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_in_hot, glide_curve, notch_window_size, provider_page, ring_window, work_insets, Screen, HOT_PAD,
+        cursor_in_hot, glide_curve, mask_user_paths, notch_window_size, provider_page, ring_window, work_insets, Screen, HOT_PAD,
         NOTCH_W, TRAY_PROVIDER_IDS,
     };
     use crate::usage::LimitWindow;

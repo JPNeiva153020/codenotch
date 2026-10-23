@@ -1,3 +1,5 @@
+> **Experimental Gemini Web fork (Windows)** — The Gemini Web implementation is on [`feature/gemini-web-monitor`](https://github.com/JPNeiva153020/codenotch/tree/feature/gemini-web-monitor). See [installation, privacy, consent and manual updates](docs/gemini-web/DISTRIBUTION-WINDOWS.md). Version `1.23.0-gemini.1` was validated locally on Windows; this is not an official Codenotch or Google release. The original project and MIT credits remain below.
+
 <div align="center">
 
 ![Codenotch](docs/design/codenotch-banner.png)

@@ -56,6 +56,7 @@ fn backup_and_write(path: &PathBuf, root: &Value) -> Result<(), String> {
 }
 
 pub fn is_installed() -> bool {
+    if crate::distribution::IS_FORK { return false; }
     settings_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|t| t.contains("codenotch-hook"))
@@ -63,6 +64,7 @@ pub fn is_installed() -> bool {
 }
 
 pub fn install() -> Result<String, String> {
+    if crate::distribution::IS_FORK { return Err("Hooks are disabled in this experimental distribution".into()); }
     let path = settings_path().ok_or("cannot find the user directory")?;
     let hook_exe = std::env::current_exe()
         .map_err(|e| e.to_string())?
@@ -101,6 +103,7 @@ pub fn install() -> Result<String, String> {
 }
 
 pub fn uninstall() -> Result<String, String> {
+    if crate::distribution::IS_FORK { return Err("Hooks are disabled in this experimental distribution".into()); }
     let path = settings_path().ok_or("cannot find the user directory")?;
     if !path.exists() {
         return Ok("settings.json does not exist, nothing to uninstall".into());

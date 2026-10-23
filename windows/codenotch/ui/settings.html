@@ -216,9 +216,13 @@
         <div class="group">
           <div class="item"><span>Open Codenotch at login</span><button class="switch" id="sw-autostart" role="switch" aria-checked="false" aria-label="Open Codenotch at login"></button></div>
           <div class="item cap">Codenotch opens by itself every time you sign in to this computer, and waits quietly in the background until a coding session starts. Turn it off and you have to open Codenotch yourself.</div>
-          <div class="item"><span>Version</span><span class="value" id="about-version" data-dynamic>0.3.0</span></div>
+          <div class="item"><span>Automatic Gemini reading</span><button class="switch" id="sw-gemini-auto" role="switch" aria-checked="false" aria-label="Automatic Gemini reading"></button></div>
+          <div class="item cap">Off by default. Enable periodic usage readings, or open the usage page for a manual reading. Disabling closes the reading window.</div>
+          <div class="item"><span>Gemini Web</span><button class="btn" id="btn-gemini-usage">Open usage page</button></div>
+          <div class="item cap">Sign in on the Gemini page if requested. Close that window after signing in. Enable automatic reading if you want periodic updates.</div>
+          <div class="item"><span>Version</span><span class="value" id="about-version" data-dynamic>…</span></div>
           <div class="item"><span>Updates</span><span class="value" id="update-status" data-dynamic></span><button class="btn" id="btn-update" data-dynamic>Check for updates</button></div>
-          <div class="item cap">Codenotch checks for new Windows releases shortly after it starts. Signed updates install here; otherwise download and run the official installer from GitHub.</div>
+          <div class="item cap" id="update-caption" data-dynamic>Codenotch checks for new Windows releases shortly after it starts. Signed updates install here; otherwise download and run the official installer from GitHub.</div>
         </div>
         <div class="sec">Notifications</div>
         <div class="group">
@@ -289,12 +293,19 @@ const PT_BR_STATIC = {
   'A light notch and card, whatever Windows is set to.':'Cápsula e cartão claros, independentemente da configuração do Windows.',
   'The dark notch, whatever Windows is set to.':'A cápsula escura, independentemente da configuração do Windows.',
   'Updates':'Atualizações',
+  'Hook integration is disabled in this experimental distribution':'A integração por hooks está desativada nesta distribuição experimental',
+  'Automatic Gemini reading':'Leitura automática do Gemini',
+  'Off by default. Enable periodic usage readings, or open the usage page for a manual reading. Disabling closes the reading window.':'Desativada por padrão. Ative leituras periódicas ou abra os limites para uma leitura manual. Desativar fecha a janela de leitura.',
+  'Open usage page':'Abrir página de limites',
+  'Sign in on the Gemini page if requested. Close that window after signing in. Enable automatic reading if you want periodic updates.':'Entre na página do Gemini se solicitado. Após entrar, feche essa janela. Ative a leitura automática se desejar atualizações periódicas.',
   'Check for updates':'Verificar atualizações',
   'Update':'Atualizar',
   'Download installer':'Baixar instalador',
   'Checking…':'Verificando…',
   'Installing…':'Instalando…',
   'Up to date':'Atualizado',
+  'Manual updates':'Atualizações manuais',
+  'Manual updates only for this experimental distribution':'Atualizações manuais nesta distribuição experimental',
   'Could not check for updates':'Não foi possível verificar atualizações',
   'Could not install the update':'Não foi possível instalar a atualização',
   'Codenotch checks for new Windows releases shortly after it starts. Signed updates install here; otherwise download and run the official installer from GitHub.':'O Codenotch procura novas versões para Windows pouco depois de iniciar. Atualizações assinadas são instaladas aqui; caso contrário, baixe e execute o instalador oficial do GitHub.',
@@ -1230,9 +1241,13 @@ function drawSwitch(el, s){
   el.setAttribute('aria-checked', s.value ? 'true' : 'false');
   el.disabled = s.busy;
 }
+const HOOKS_UNAVAILABLE = 'Hook integration is disabled in this experimental distribution';
+let distributionInfo = null;
 const hooks = remote('get_hooks_installed', 'set_hooks_installed', 'The Claude Code messages', () => renderAccounts());
 const autostart = remote('get_autostart', 'set_autostart', 'Open Codenotch at login', () => drawSwitch(document.getElementById('sw-autostart'), autostart));
 document.getElementById('sw-autostart').addEventListener('click', () => autostart.toggle());
+const geminiAuto = remote('get_gemini_auto', 'set_gemini_auto', 'Automatic Gemini reading', () => drawSwitch(document.getElementById('sw-gemini-auto'), geminiAuto));
+document.getElementById('sw-gemini-auto').addEventListener('click', () => geminiAuto.toggle());
 const foldFullScreen = remote('get_fold_for_full_screen', 'set_fold_for_full_screen', 'Fold for full-screen apps', () => drawSwitch(document.getElementById('sw-fullscreen'), foldFullScreen));
 document.getElementById('sw-fullscreen').addEventListener('click', () => foldFullScreen.toggle());
 const resetAlert = remote('get_reset_notifications', 'set_reset_notifications', 'Reset notifications', () => drawSwitch(document.getElementById('sw-reset-alert'), resetAlert));
@@ -1291,8 +1306,8 @@ function accountBlock(p, isOn, locked){
   if(p.id === 'claude'){
     h += '<div class="acct-sub"><span>' + esc(ui('Let Claude Code notify Codenotch', 'Let Claude Code notify Codenotch')) + '</span>'
       + '<button class="switch' + (hooks.value ? ' on' : '') + '" role="switch" aria-checked="' + hooks.value + '" data-remote="hooks"'
-      + (hooks.busy ? ' disabled' : '') + ' aria-label="' + esc(ui('Let Claude Code notify Codenotch', 'Let Claude Code notify Codenotch')) + '"></button></div>'
-      + '<div class="acct-detail">' + esc(ui(HOOKS_WHY, HOOKS_WHY)) + '</div>';
+      + (hooks.busy || distributionInfo?.hooks_supported === false ? ' disabled' : '') + ' aria-label="' + esc(ui('Let Claude Code notify Codenotch', 'Let Claude Code notify Codenotch')) + '"></button></div>'
+      + '<div class="acct-detail">' + esc(ui(distributionInfo?.hooks_supported === false ? HOOKS_UNAVAILABLE : HOOKS_WHY, distributionInfo?.hooks_supported === false ? HOOKS_UNAVAILABLE : HOOKS_WHY)) + '</div>';
   }
   return h + '</div>';
 }
@@ -1335,7 +1350,7 @@ const accountsPane = document.getElementById('pane-accounts');
 accountsPane.addEventListener('click', e => {
   const np = e.target.closest('[data-np]');
   if(np){ toggleNotch(np.dataset.np); return; }
-  if(e.target.closest('[data-remote="hooks"]')) hooks.toggle();
+  if(e.target.closest('[data-remote="hooks"]') && distributionInfo?.hooks_supported !== false) hooks.toggle();
 });
 accountsPane.addEventListener('change', e => {
   const box = e.target.closest('[data-ag]');
@@ -1699,24 +1714,30 @@ document.getElementById('lang').addEventListener('change', e => {
 });
 
 /* ---- General --------------------------------------------------------------- */
+document.getElementById('btn-gemini-usage').addEventListener('click', () => {
+  invoke('open_gemini_usage').catch(() => strip(ui('Could not open Gemini usage page','Could not open Gemini usage page')));
+});
 document.getElementById('btn-data').addEventListener('click', () => {
   invoke('open_data_dir').catch(e => strip('open_data_dir failed: ' + errText(e)));
 });
 document.getElementById('author').addEventListener('click', () => {
   invoke('open_author_page').catch(e => strip('open_author_page failed: ' + errText(e)));
 });
-(function realVersion(){
-  const api = window.__TAURI__ && window.__TAURI__.app;
-  const el = document.getElementById('about-version');
-  if(!api || typeof api.getVersion !== 'function') return;
-  try { Promise.resolve(api.getVersion()).then(v => { if(typeof v === 'string' && v) el.textContent = v; }).catch(() => {}); }
-  catch(e) { /* the built-in number stays */ }
-})();
-
 /* ---- updates --------------------------------------------------------------
    Never a dialogue and never a badge: an update the user has not asked about is
    a line of text next to the version, and a check that failed says so where it
    was asked for rather than interrupting anything. */
+function renderDistribution(){
+  if(!distributionInfo) return;
+  document.getElementById('about-version').textContent=distributionInfo.version;
+  const caption=distributionInfo.channel==='experimental-manual'
+    ? 'Manual updates only for this experimental distribution'
+    : 'Codenotch checks for new Windows releases shortly after it starts. Signed updates install here; otherwise download and run the official installer from GitHub.';
+  document.getElementById('update-caption').textContent=ui(caption,caption);
+}
+invoke('get_distribution_info').then(info=>{
+  distributionInfo=info;renderDistribution();renderAccounts();
+}).catch(()=>{});
 const updBtn = document.getElementById('btn-update');
 const updStatus = document.getElementById('update-status');
 /* The state arrives before the language does, so the row keeps it and is drawn again by renderAll */
@@ -1725,7 +1746,8 @@ let updateEventSeen = false;
 function renderUpdate(st){
   st = updState = st || {};
   const busy = !!(st.checking || st.installing);
-  updBtn.disabled = busy;
+  updBtn.disabled = busy || !!st.disabled;
+  if(st.disabled){ updStatus.textContent=ui('Manual updates','Manual updates'); updBtn.textContent=ui('Check for updates','Check for updates'); return; }
   if(st.installing){ updStatus.textContent = ui('Installing…', 'Installing…'); updBtn.textContent = ui('Update', 'Update'); return; }
   if(st.checking){ updStatus.textContent = ui('Checking…', 'Checking…'); updBtn.textContent = ui('Check for updates', 'Check for updates'); return; }
   if(st.available){
@@ -1739,6 +1761,7 @@ function renderUpdate(st){
 }
 updBtn.addEventListener('click', () => {
   const st = updState || {};
+  if(st.disabled) return;
   const cmd = st.available ? (st.can_install ? 'install_update' : 'open_update_installer') : 'check_for_update';
   invoke(cmd)
     .catch(e => strip('update failed: ' + errText(e)));
@@ -1751,6 +1774,7 @@ Promise.resolve(updateListener).catch(() => {}).then(() =>
 
 /* ---- start ---------------------------------------------------------------- */
 function renderAll(){
+  renderDistribution();
   renderAccounts();
   renderFlags();
   renderSize();
@@ -1760,6 +1784,7 @@ function renderAll(){
   renderTheme();
   renderTransition();
   drawSwitch(document.getElementById('sw-autostart'), autostart);
+  drawSwitch(document.getElementById('sw-gemini-auto'), geminiAuto);
   drawSwitch(document.getElementById('sw-fullscreen'), foldFullScreen);
   drawSwitch(document.getElementById('sw-reset-alert'), resetAlert);
   drawSwitch(document.getElementById('sw-reset-sound'), resetSound);
@@ -1804,6 +1829,7 @@ function boot(){
     adaptivePill.refresh(),
     weeklyDashed.refresh(),
     showRemaining.refresh(),
+    geminiAuto.refresh(),
     hooks.refresh()
   ];
   try { window.__TAURI__.event.listen('glyphs', e => { if(e.payload){ glyphs = e.payload; renderAccounts(); } }); } catch(e) { /* the letters stay */ }

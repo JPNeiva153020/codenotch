@@ -1,10 +1,15 @@
 [package]
 name = "codenotch"
-version = "1.23.0"
+version = "1.23.0-gemini.1"
 edition = "2021"
 description = "Codenotch for Windows — usage notch for Claude, Codex, Cursor and Antigravity"
 license = "MIT"
 repository = "https://github.com/Im-Midi/codenotch-windows"
+
+[features]
+default = ["gemini-web-distribution"]
+gemini-web-distribution = []
+gemini-web-lab = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

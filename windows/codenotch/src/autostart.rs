@@ -8,7 +8,7 @@ use std::process::Command;
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const NAME: &str = "Codenotch";
+const NAME: &str = crate::distribution::AUTOSTART_NAME;
 
 #[cfg(windows)]
 fn reg(args: &[&str]) -> Option<(bool, String)> {
@@ -71,7 +71,7 @@ pub fn disable() -> Result<String, String> {
 #[cfg(not(windows))]
 fn desktop_entry_path() -> Option<std::path::PathBuf> {
     let dir = dirs::config_dir()?.join("autostart");
-    Some(dir.join("codenotch.desktop"))
+    Some(dir.join(if crate::distribution::IS_FORK {"codenotch-gemini-web.desktop"} else {"codenotch.desktop"}))
 }
 
 #[cfg(not(windows))]

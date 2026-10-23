@@ -1231,6 +1231,7 @@ function ringWindow(snap,id,w){
   return id!=='claude' || claudeQuotaCurrent(snap,w) ? w : null;
 }
 function quotaResetCopy(snap,id,w){
+  if(w.reset_detail) return textCopy(w.reset_detail);
   if(id==='claude' && !claudeQuotaCurrent(snap,w))
     return w.resets_at ? textCopy('Last reported reset')+': '+new Date(w.resets_at).toLocaleString() : '';
   return resetCopy(w.resets_at);

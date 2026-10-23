@@ -11,3 +11,16 @@ xcuserdata/
 .forgeguard/
 .playwright-mcp/
 /plans/
+
+# Local validation reports: retain locally; do not publish personal diagnostics.
+/docs/gemini-web/24-AUDITORIA-INTEGRACAO-ATUAL.md
+/docs/gemini-web/25-CORRECOES-E-JUSTIFICATIVAS.md
+/docs/gemini-web/26-RESULTADOS-DE-TESTES.md
+/docs/gemini-web/27-ROTEIRO-DE-VALIDACAO-MANUAL.md
+/docs/gemini-web/28-REVISAO-INDEPENDENTE-E-CORRECOES.md
+/docs/gemini-web/30-VALIDACAO-RUST-E-TOOLCHAIN.md
+/docs/gemini-web/31-ISOLAMENTO-LEGADO-E-VALIDACAO.md
+/docs/gemini-web/32-ATUALIZACAO-E-CAPTURA-REAL.md
+/docs/gemini-web/33-CONCLUSAO-ATUALIZACAO.md
+/docs/gemini-web/34-ACABAMENTO-INSTALACAO-E-VERSIONAMENTO.md
+/docs/gemini-web/35-HOMOLOGACAO-LOCAL-E-DISTRIBUICAO.md

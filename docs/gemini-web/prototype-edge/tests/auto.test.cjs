@@ -21,19 +21,19 @@ test('política aceita somente HTTPS e rota ancorada de limites (incluindo /usag
   assert.equal(c.usageUrl('https://gemini.google.com/usage?pageId=none'),true);
   for(const url of ['https://gemini.google.com/app','https://gemini.google.com/u/0/usage/chat','https://gemini.google.com/u/abc/usage','http://gemini.google.com/u/0/usage','https://gemini.google.com.evil.invalid/u/0/usage','https://user:pass@gemini.google.com/u/0/usage'])assert.equal(c.usageUrl(url),false);
 });
-test('snapshot mínimo exclui conta, perfil, URL, notas e dados arbitrários e calcula epoch_ms local',()=>{
+test('snapshot mínimo exclui conta, perfil, URL, notas e dados arbitrários e conserva epoch_ms desconhecido',()=>{
   const c=policy().GeminiAutoCore,r=c.minimal({...sample(),email:'NAO_EXPORTAR',url:'NAO_EXPORTAR',plan:'NAO_EXPORTAR'},1000);
   assert.equal(JSON.stringify(r).includes('NAO_EXPORTAR'),false);assert.equal(r.model,null);assert.equal(r.observed_at_ms,1000);
-  assert.equal(Number.isInteger(r.windows[0].reset.epoch_ms),true);
-  assert.equal(Number.isInteger(r.windows[1].reset.epoch_ms),true);
+  assert.equal(r.windows[0].reset.epoch_ms,null);
+  assert.equal(r.windows[1].reset.epoch_ms,null);
 
   const refNow = new Date(2026, 9, 19, 14, 30, 0, 0).getTime();
   const raw = sample();
   raw.windows[0].reset = { day:null, month:null, year:null, timezone:null, epoch_ms:null, hour:12, minute:11 };
   raw.windows[1].reset = { day:20, month:10, year:null, timezone:null, epoch_ms:null, hour:9, minute:11 };
   const calc = c.minimal(raw, refNow);
-  assert.equal(calc.windows[0].reset.epoch_ms, new Date(2026, 9, 20, 12, 11, 0, 0).getTime());
-  assert.equal(calc.windows[1].reset.epoch_ms, new Date(2026, 9, 20, 9, 11, 0, 0).getTime());
+  assert.equal(calc.windows[0].reset.epoch_ms,null);
+  assert.equal(calc.windows[1].reset.epoch_ms,null);
 });
 test('snapshot parcial ou percentuais inválidos são rejeitados',()=>{
   const c=policy().GeminiAutoCore;assert.equal(c.minimal({...sample(),status:'partial'}),null);
@@ -110,8 +110,8 @@ test('desativação invalida snapshot já enfileirado antes de gravar',async()=>
 test('desativado conserva acesso apenas ao último histórico até apagar',async()=>{
   const w=worker();w.grant();await w.message({type:'AUTO_ENABLE'});await w.message({type:'AUTO_SNAPSHOT',snapshot:sample()},{id:'test-extension',url:w.tab.url,tab:{id:1}});await w.message({type:'AUTO_DISABLE'});w.tab.url='https://gemini.google.com/app';const r=await w.message({type:'AUTO_STATE'});assert.equal(r.enabled,false);assert.equal(r.freshness,'historical');assert.equal(r.snapshot.windows[0].used_percent,16);
 });
-test('configuração v0.3.0: permissões obrigatórias, host_permissions e content_scripts (MAIN shim em /usage e chat-trigger em /app)',()=>{
-  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.3.0');assert.deepEqual(m.permissions,['activeTab','scripting','nativeMessaging','alarms','storage','webNavigation','tabs']);assert.equal(m.optional_permissions,undefined);assert.deepEqual(m.host_permissions,['https://gemini.google.com/*']);assert.equal(m.optional_host_permissions,undefined);
+test('configuração v0.3.1 sem Native Messaging: permissões obrigatórias, host_permissions e content_scripts (MAIN shim em /usage e chat-trigger em /app)',()=>{
+  const m=JSON.parse(code('manifest.json'));assert.equal(m.version,'0.3.1');assert.deepEqual(m.permissions,['activeTab','scripting','alarms','storage','webNavigation','tabs']);assert.equal(m.optional_permissions,undefined);assert.deepEqual(m.host_permissions,['https://gemini.google.com/*']);assert.equal(m.optional_host_permissions,undefined);
   assert.deepEqual(m.content_scripts,[
     {matches:['https://gemini.google.com/usage*','https://gemini.google.com/u/*/usage*'],js:['visibility-shim.js'],run_at:'document_start',world:'MAIN'},
     {matches:['https://gemini.google.com/app*','https://gemini.google.com/u/*/app*'],js:['chat-trigger.js'],run_at:'document_idle'}
@@ -306,31 +306,21 @@ test('popup ao abrir dispara AUTO_RECHECK automático somente quando enabled=tru
   assert.equal(JSON.parse(staleOpen.elements['auto-result'].textContent).windows[0].used_percent,35);
 });
 
-test('AUTO_SNAPSHOT e AUTO_STATE notificam host nativo com.codenotch.gemini_web e toleram falha de sendNativeMessage',async()=>{
+test('AUTO_SNAPSHOT e AUTO_STATE permanecem locais sem qualquer chamada Native Messaging',async()=>{
   const w=worker({autoEnabled:true});w.grant();
   const sender={id:'test-extension',url:w.tab.url,tab:{id:1}};
   const snap=sample();snap.observed_at_ms=Date.now()-2000;snap.windows[0].used_percent=48;
-  const res1=await w.message({type:'AUTO_SNAPSHOT',snapshot:{...snap,extra:'NAO_ENVIAR'}},sender);
-  assert.equal(res1.accepted,true);
-  assert.equal(w.nativeMessages.length,1);
-  assert.equal(w.nativeMessages[0].host,'com.codenotch.gemini_web');
-  assert.equal(w.nativeMessages[0].payload.provider,'gemini_web');
-  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,48);
-  assert.equal(Number.isInteger(w.nativeMessages[0].payload.windows[0].reset.epoch_ms),true);
-  assert.equal('extra' in w.nativeMessages[0].payload,false);
-
-  const stateRes=await w.message({type:'AUTO_STATE'});
-  assert.equal(stateRes.snapshot.windows[0].used_percent,48);
-  assert.equal(w.nativeMessages.length,2);
-  assert.equal(w.nativeMessages[1].host,'com.codenotch.gemini_web');
-  assert.equal(w.nativeMessages[1].payload.windows[0].used_percent,48);
-
-  w.chrome.runtime.sendNativeMessage=()=>{throw new Error('Specified native messaging host not found.');};
-  const snap2=sample();snap2.observed_at_ms=Date.now()-1000;snap2.windows[0].used_percent=52;
-  const res2=await w.message({type:'AUTO_SNAPSHOT',snapshot:snap2},sender);
-  assert.equal(res2.accepted,true);
-  assert.equal(w.data.lastSnapshot.windows[0].used_percent,52);
-  assert.equal(w.badge.text,'52%');
+  const accepted=await w.message({type:'AUTO_SNAPSHOT',snapshot:{...snap,extra:'NAO_ENVIAR'}},sender);
+  assert.equal(accepted.accepted,true);
+  const state=await w.message({type:'AUTO_STATE'});
+  assert.equal(state.snapshot.windows[0].used_percent,48);
+  assert.equal(state.snapshot.windows[0].reset.epoch_ms,null);
+  assert.equal('extra' in state.snapshot,false);
+  assert.equal(w.nativeMessages.length,0);
+  w.chrome.runtime.sendNativeMessage=()=>{throw new Error('Native Messaging must never be called');};
+  const next=sample();next.observed_at_ms=Date.now()-1000;next.windows[0].used_percent=52;
+  assert.equal((await w.message({type:'AUTO_SNAPSHOT',snapshot:next},sender)).accepted,true);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,52);assert.equal(w.badge.text,'52%');
 });
 
 test('transição SPA via tabs.onUpdated sem status complete dispara captura em /u/1/usage?pageId=none',async()=>{
@@ -359,8 +349,8 @@ test('polling ativo pelo worker em aba oculta extrai após hidratação tardia d
   assert.equal(res.code,'updated');
   assert.equal(w.badge.text,'29%');
   assert.equal(w.data.lastSnapshot.windows[0].used_percent,29);
-  assert.equal(w.nativeMessages.length,1);
-  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,29);
+  assert.equal(w.nativeMessages.length,0);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,29);
   assert.deepEqual(w.removed,[99]);
 });
 
@@ -470,8 +460,8 @@ test('alarme gemini-web-auto-refresh executa atualização em 2º plano e atuali
   assert.equal(w.injections.some(i=>i.world==='MAIN' && i.files?.includes('visibility-shim.js')),true);
   assert.equal(w.data.lastSnapshot.windows[0].used_percent,74);
   assert.equal(w.badge.text,'74%');
-  assert.equal(w.nativeMessages.length,1);
-  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,74);
+  assert.equal(w.nativeMessages.length,0);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,74);
   assert.deepEqual(w.removed,[99]);
 });
 
@@ -497,7 +487,7 @@ test('visibility-shim.js força document.hidden=false, visibilityState="visible"
   assert.equal(rafCalledWith,4242);
 });
 
-test('applyClockResetIfExpired zera used_percent (100% -> 0%), recalcula remaining_percent=100 e avança reset.epoch_ms em +5h quando horário de reset já passou',async()=>{
+test('applyClockResetIfExpired preserva observação e horários parciais sem zeragem nem avanço por relógio',async()=>{
   const c=policy().GeminiAutoCore;
   const observedAt=new Date(2026,9,19,15,4,10,9).getTime(); // 15:04
   const resetAt1711=new Date(2026,9,19,17,11,0,0).getTime(); // 17:11
@@ -509,10 +499,11 @@ test('applyClockResetIfExpired zera used_percent (100% -> 0%), recalcula remaini
   const snap=c.minimal(raw,observedAt);
   assert.equal(snap.windows[0].used_percent,100);
   const afterReset=c.applyClockResetIfExpired(snap,nowAt1920);
-  assert.equal(afterReset.windows[0].used_percent,0);
-  assert.equal(afterReset.windows[0].remaining_percent,100);
-  assert.equal(afterReset.windows[0].reset.epoch_ms,resetAt1711+5*3600*1000);
-  assert.equal(afterReset.windows[0].reset.hour,22);
+  assert.equal(afterReset.windows[0].used_percent,100);
+  assert.equal(afterReset.windows[0].remaining_percent,0);
+  assert.equal(afterReset.windows[0].reset.epoch_ms,null);
+  assert.equal(afterReset.observed_at_ms,observedAt);
+  assert.equal(afterReset.windows[0].reset.hour,17);
   assert.equal(afterReset.windows[0].reset.minute,11);
   assert.equal(afterReset.windows[0].reset.needs_confirmation,true);
 });
@@ -569,8 +560,8 @@ test('chat-trigger.js e GEMINI_TURN_COMPLETED ativam autoEnabled por padrão e d
   assert.equal(w.created.length,1);
   assert.equal(w.created[0].url,'https://gemini.google.com/u/1/usage?pageId=none');
   assert.equal(w.badge.text,'22%');
-  assert.equal(w.nativeMessages.length,1);
-  assert.equal(w.nativeMessages[0].payload.windows[0].used_percent,22);
+  assert.equal(w.nativeMessages.length,0);
+  assert.equal(w.data.lastSnapshot.windows[0].used_percent,22);
 });
 
 
@@ -578,3 +569,14 @@ test('chat-trigger.js e GEMINI_TURN_COMPLETED ativam autoEnabled por padrão e d
 
 
 
+
+test('diagnóstico de falha de atualização não armazena texto privado da exceção',async()=>{
+  const w=worker({autoEnabled:true});w.grant();
+  w.tab.url='https://gemini.google.com/app';
+  w.otherTabs.push({id:7,url:'https://gemini.google.com/u/0/usage',active:false});
+  w.chrome.tabs.reload=async()=>{throw new Error('PRIVATE_EXCEPTION user@example.invalid C:\\Users\\PRIVATE');};
+  await w.message({type:'AUTO_RECHECK'});
+  assert.ok(w.data.lastRefreshError);
+  assert.equal(JSON.stringify(w.data.lastRefreshError).includes('PRIVATE'),false);
+  assert.equal(JSON.stringify(w.data.lastRefreshError).includes('@'),false);
+});

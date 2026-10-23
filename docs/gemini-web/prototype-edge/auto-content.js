@@ -63,5 +63,6 @@
   window.addEventListener('pageshow', onShow);
   globalThis.CodenotchGeminiAutoSession = {stop,recheck:start};
   start();
-  try { return CodenotchGeminiQuotaPrototype.extract(); } catch { return null; }
+  // Only the authorized controller may read; injection itself never extracts.
+  return null;
 })();

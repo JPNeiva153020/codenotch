@@ -146,6 +146,9 @@ pub struct LimitWindow {
     /// for several things (Antigravity: a 5-hour and a weekly lane per model family). None = ungrouped
     #[serde(default)]
     pub group: Option<String>,
+    /// Human-readable detail about reset timing when exact epoch_ms cannot be confirmed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

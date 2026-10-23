@@ -28,7 +28,7 @@ function clearAlarm() {
   try { void chrome.alarms?.clear?.(AUTO_REFRESH_ALARM); } catch {}
 }
 async function recordRefreshError(code, err) {
-  const message = String(err?.message || err || code).slice(0, 160);
+  const message = 'Atualização indisponível; consulte o código de erro.';
   const entry = { code, message, at_ms: Date.now() };
   diagnostic.last_code = code;
   diagnostic.last_error = entry;
@@ -51,12 +51,6 @@ function updateBadge(snapshot) {
     void chrome.action?.setBadgeText?.({ text: `${used}%` });
   } catch {}
 }
-function notifyNativeHost(snapshot) {
-  try {
-    const res = chrome.runtime?.sendNativeMessage?.('com.codenotch.gemini_web', snapshot, () => void chrome.runtime?.lastError);
-    if (res && typeof res.catch === 'function') res.catch(() => {});
-  } catch {}
-}
 async function syncExpiredSnapshotIfNeeded(rawSnap, nowMs = Date.now()) {
   if (!rawSnap || !Number.isFinite(rawSnap.observed_at_ms)) return null;
   const base = core.minimal(rawSnap, rawSnap.observed_at_ms);
@@ -65,7 +59,7 @@ async function syncExpiredSnapshotIfNeeded(rawSnap, nowMs = Date.now()) {
   if (checked !== base) {
     try { await chrome.storage.local.set({ lastSnapshot: checked }); } catch {}
     updateBadge(checked);
-    notifyNativeHost(checked);
+
   }
   return checked;
 }
@@ -261,7 +255,7 @@ async function ingestSnapshot(tabId, sourceUrl, rawSnapshot, generation) {
   }
   diagnostic.last_error = null;
   updateBadge(snapshot);
-  notifyNativeHost(snapshot);
+
   diagnostic.last_code='persisted';diagnostic.publications++;
   reportRead(tabId,observed,{confirmed:true,code:unchanged?'unchanged':'updated'});
   return {accepted:true,code:'persisted'};
@@ -278,7 +272,7 @@ async function injectVisibilityShim(tabId) {
 }
 async function pollUsageTab(tabId, generation, ticket = null) {
   try {
-    if (generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
+    if (!await enabled() || generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
     const firstTab = await chrome.tabs.get(tabId);
     if (!firstTab || !core.usageUrl(firstTab.url)) return false;
     activeTabs.add(tabId);
@@ -300,7 +294,7 @@ async function pollUsageTab(tabId, generation, ticket = null) {
     await injectVisibilityShim(tabId);
     for (let attempt = 2; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
       await delay(POLL_INTERVAL_MS);
-      if (generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
+      if (!await enabled() || generation !== revision || (ticket && navigations.get(tabId) !== ticket)) return false;
       const tab = await chrome.tabs.get(tabId);
       if (!tab || !core.usageUrl(tab.url)) return false;
       await injectVisibilityShim(tabId);
@@ -314,7 +308,13 @@ async function pollUsageTab(tabId, generation, ticket = null) {
         const fnRes = await chrome.scripting.executeScript({
           target: { tabId, frameIds: [0] },
           world: 'ISOLATED',
-          func: () => globalThis.CodenotchGeminiQuotaPrototype?.extract?.(document, Date.now()) || null
+          func: async () => {
+            const url = location.href;
+            const consent = await chrome.runtime.sendMessage({type:'AUTO_CHECK'});
+            if (consent?.enabled !== true || location.href !== url || !globalThis.GeminiAutoCore?.usageUrl(url)) return null;
+            const raw=globalThis.CodenotchGeminiQuotaPrototype?.extract?.(document,Date.now()) || null;
+            return location.href === url ? raw : null;
+          }
         });
         raw = Array.isArray(fnRes) ? fnRes[0]?.result : null;
       }
@@ -630,7 +630,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply) => {
         const auto = await enabled();
         const freshness = core.freshness(snapshot,Date.now(),auto && core.usageUrl(tab?.url));
         if (freshness === 'unavailable') { await chrome.storage.local.remove('lastSnapshot'); updateBadge(null); }
-        else if (snapshot) { updateBadge(snapshot); notifyNativeHost(snapshot); }
+        else if (snapshot) { updateBadge(snapshot); }
         return {enabled:auto,snapshot:freshness==='unavailable'?null:snapshot,freshness,lastKnownUsageUrl:usageTargetUrl(tab?.url,[],data.lastKnownUsageUrl),lastRefreshError:data.lastRefreshError||null};
       }
       return {};

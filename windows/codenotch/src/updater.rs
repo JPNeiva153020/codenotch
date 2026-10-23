@@ -16,6 +16,7 @@ const INSTALL_ERROR: &str = "Could not install the update";
 
 #[derive(Clone, Serialize, Default)]
 pub struct UpdateState {
+    pub disabled: bool,
     pub available: Option<String>,
     pub checking: bool,
     pub installing: bool,
@@ -48,8 +49,13 @@ fn set(app: &AppHandle, next: UpdateState) {
     let _ = app.emit("update_state", &next);
 }
 
+fn disabled_state() -> UpdateState {
+    UpdateState { disabled:true, message:Some(crate::distribution::UPDATE_MESSAGE.into()), ..Default::default() }
+}
+
 #[tauri::command]
 pub fn get_update_state() -> UpdateState {
+    if crate::distribution::IS_FORK { return disabled_state(); }
     state().clone().unwrap_or_default()
 }
 
@@ -123,6 +129,7 @@ fn signed_feed_offer(app: &AppHandle) -> Option<String> {
 /// Returns immediately; release and signed-feed checks happen off the UI thread.
 #[tauri::command]
 pub fn check_for_update(app: AppHandle) {
+    if crate::distribution::IS_FORK { set(&app,disabled_state()); return; }
     if state().as_ref().is_some_and(|s| s.checking || s.installing) {
         return;
     }
@@ -212,6 +219,7 @@ pub fn check_for_update(app: AppHandle) {
 /// supplies neither the version nor a URL.
 #[tauri::command]
 pub fn open_update_installer() -> Result<(), String> {
+    if crate::distribution::IS_FORK { return Err(crate::distribution::UPDATE_MESSAGE.into()); }
     let version = {
         let current = state();
         let offer = current.as_ref().ok_or("No update has been checked")?;
@@ -240,6 +248,7 @@ pub fn open_update_installer() -> Result<(), String> {
 /// Install only an offer previously found in a signed Tauri feed.
 #[tauri::command]
 pub fn install_update(app: AppHandle) {
+    if crate::distribution::IS_FORK { set(&app,disabled_state()); return; }
     let offered = {
         let current = state();
         let Some(offer) = current.as_ref() else {
@@ -310,6 +319,7 @@ pub fn install_update(app: AppHandle) {
 }
 
 pub fn check_on_launch(app: &AppHandle) {
+    if crate::distribution::IS_FORK { set(app,disabled_state()); return; }
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(20));
@@ -319,6 +329,13 @@ pub fn check_on_launch(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_distribution_never_exposes_an_install_or_upstream_offer() {
+        let state=super::disabled_state();
+        assert!(state.disabled);assert!(!state.checked);assert!(!state.can_install);
+        assert!(state.available.is_none());assert!(!state.checking);assert!(!state.installing);
+        if crate::distribution::IS_FORK { assert!(super::open_update_installer().is_err()); }
+    }
     use super::{newer_signed_release, newer_windows_release, signed_offer_matches};
     use semver::Version;
 

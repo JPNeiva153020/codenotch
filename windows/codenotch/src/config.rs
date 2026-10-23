@@ -329,9 +329,10 @@ impl Default for Config {
 }
 
 pub fn config_path() -> PathBuf {
+    if let Some(root) = crate::gemini_lab_profile::root() { return root.join("config.json"); }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("codenotch")
+        .join(crate::distribution::DATA_FOLDER)
         .join("config.json")
 }
 

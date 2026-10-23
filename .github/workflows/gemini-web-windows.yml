@@ -1,0 +1,42 @@
+name: Gemini Web distribution checks
+
+on:
+  push:
+    paths: ['windows/**', 'docs/gemini-web/prototype-edge/**', '.github/workflows/gemini-web-windows.yml']
+  pull_request:
+    paths: ['windows/**', 'docs/gemini-web/prototype-edge/**', '.github/workflows/gemini-web-windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - name: Build distribution and compatibility configuration
+        working-directory: windows
+        run: |
+          cargo check --locked --no-default-features
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --features gemini-web-lab
+      - name: Fixture and UI checks
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem windows/test-*.cjs, windows/scripts/test-*.cjs | ForEach-Object FullName)
+          $files += @('docs/gemini-web/prototype-edge/tests/auto.test.cjs', 'docs/gemini-web/prototype-edge/tests/outside-usage.test.cjs', 'docs/gemini-web/prototype-edge/tests/popup-security.test.cjs')
+          node --test --test-concurrency=1 @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node windows/scripts/check-ui-scripts.mjs
